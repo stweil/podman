@@ -62,13 +62,17 @@ Valid placeholders for the Go template are listed below:
 | --------------- | ---------------------------- |
 | .Index          | Registry                     |
 | .Name           | Image name                   |
-| .Descriptions   | Image description            |
+| .Description    | Image description            |
 | .Stars          | Star count of image          |
 | .Official       | "[OK]" if image is official  |
 | .Automated      | "[OK]" if image is automated |
 | .Tag            | Repository tag               |
 
 Note: use .Tag only if the --list-tags is set.
+
+#### **--help**, **-h**
+
+Print usage statement
 
 #### **--limit**=*limit*
 
@@ -86,7 +90,7 @@ The result contains the Image name and its tag, one line for every tag associate
 
 #### **--no-trunc**
 
-Do not truncate the output (default *true*).
+Do not truncate the output (default *false*).
 
 #### **--tls-verify**
 
@@ -94,10 +98,6 @@ Require HTTPS and verify certificates when contacting registries (default: true)
 then TLS verification will be used. If set to false, then TLS verification will not be used if needed. If not specified,
 default registries will be searched through (in /etc/containers/registries.conf), and TLS will be skipped if a default
 registry is listed in the insecure registries.
-
-#### **--help**, **-h**
-
-Print usage statement
 
 ## EXAMPLES
 
@@ -144,7 +144,7 @@ Note: This works only with registries that implement the v2 API. If tried with a
 registries.conf is the configuration file which specifies which container registries should be consulted when completing image names which do not include a registry or domain portion.
 
 ## SEE ALSO
-podman(1), containers-registries.conf(5)
+**[podman(1)](podman.1.md)**, **[containers-registries(5)](https://github.com/containers/image/blob/main/docs/containers-registries.5.md)**
 
 ## HISTORY
 January 2018, Originally compiled by Urvashi Mohnani <umohnani@redhat.com>

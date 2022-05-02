@@ -1,9 +1,9 @@
+//go:build linux
 // +build linux
 
 package libpod
 
 import (
-	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/rootless"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v4/pkg/util"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -45,7 +45,7 @@ func (r *Runtime) stopPauseProcess() error {
 	return nil
 }
 
-func (r *Runtime) migrate(ctx context.Context) error {
+func (r *Runtime) migrate() error {
 	runningContainers, err := r.GetRunningContainers()
 	if err != nil {
 		return err

@@ -10,7 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/blang/semver"
-	"github.com/containers/podman/v3/version"
+	"github.com/containers/podman/v4/version"
 	"github.com/gorilla/mux"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/pkg/errors"
@@ -145,12 +145,12 @@ func MarshalErrorSliceJSON(ptr unsafe.Pointer, stream *jsoniter.Stream) {
 	}
 }
 
-func MarshalErrorJSONIsEmpty(_ unsafe.Pointer) bool {
-	return false
+func MarshalErrorJSONIsEmpty(ptr unsafe.Pointer) bool {
+	return *((*error)(ptr)) == nil
 }
 
-func MarshalErrorSliceJSONIsEmpty(_ unsafe.Pointer) bool {
-	return false
+func MarshalErrorSliceJSONIsEmpty(ptr unsafe.Pointer) bool {
+	return len(*((*[]error)(ptr))) == 0
 }
 
 // WriteJSON writes an interface value encoded as JSON to w
@@ -174,7 +174,7 @@ func FilterMapToString(filters map[string][]string) (string, error) {
 	return string(f), nil
 }
 
-func getVar(r *http.Request, k string) string {
+func GetVar(r *http.Request, k string) string {
 	val := mux.Vars(r)[k]
 	safeVal, err := url.PathUnescape(val)
 	if err != nil {
@@ -186,5 +186,5 @@ func getVar(r *http.Request, k string) string {
 
 // GetName extracts the name from the mux
 func GetName(r *http.Request) string {
-	return getVar(r, "name")
+	return GetVar(r, "name")
 }

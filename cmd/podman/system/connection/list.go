@@ -8,10 +8,10 @@ import (
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/cmd/podman/system"
-	"github.com/containers/podman/v3/cmd/podman/validate"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/cmd/podman/system"
+	"github.com/containers/podman/v4/cmd/podman/validate"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +38,7 @@ func init() {
 	})
 
 	listCmd.Flags().String("format", "", "Custom Go template for printing connections")
-	_ = listCmd.RegisterFlagCompletionFunc("format", common.AutocompleteFormat(namedDestination{}))
+	_ = listCmd.RegisterFlagCompletionFunc("format", common.AutocompleteFormat(&namedDestination{}))
 }
 
 type namedDestination struct {
@@ -52,17 +52,6 @@ func list(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-
-	if len(cfg.Engine.ServiceDestinations) == 0 {
-		return nil
-	}
-
-	hdrs := []map[string]string{{
-		"Identity": "Identity",
-		"Name":     "Name",
-		"URI":      "URI",
-		"Default":  "Default",
-	}}
 
 	rows := make([]namedDestination, 0)
 	for k, v := range cfg.Engine.ServiceDestinations {
@@ -86,36 +75,37 @@ func list(cmd *cobra.Command, _ []string) error {
 		return rows[i].Name < rows[j].Name
 	})
 
-	format := "{{.Name}}\t{{.URI}}\t{{.Identity}}\t{{.Default}}\n"
-	switch {
-	case report.IsJSON(cmd.Flag("format").Value.String()):
+	rpt := report.New(os.Stdout, cmd.Name())
+	defer rpt.Flush()
+
+	if report.IsJSON(cmd.Flag("format").Value.String()) {
 		buf, err := registry.JSONLibrary().MarshalIndent(rows, "", "    ")
 		if err == nil {
 			fmt.Println(string(buf))
 		}
 		return err
-	default:
-		if cmd.Flag("format").Changed {
-			format = cmd.Flag("format").Value.String()
-			format = report.NormalizeFormat(format)
+	}
+
+	if cmd.Flag("format").Changed {
+		rpt, err = rpt.Parse(report.OriginUser, cmd.Flag("format").Value.String())
+	} else {
+		rpt, err = rpt.Parse(report.OriginPodman,
+			"{{range .}}{{.Name}}\t{{.URI}}\t{{.Identity}}\t{{.Default}}\n{{end -}}")
+	}
+	if err != nil {
+		return err
+	}
+
+	if rpt.RenderHeaders {
+		err = rpt.Execute([]map[string]string{{
+			"Default":  "Default",
+			"Identity": "Identity",
+			"Name":     "Name",
+			"URI":      "URI",
+		}})
+		if err != nil {
+			return err
 		}
 	}
-	format = report.EnforceRange(format)
-
-	tmpl, err := report.NewTemplate("list").Parse(format)
-	if err != nil {
-		return err
-	}
-
-	w, err := report.NewWriterDefault(os.Stdout)
-	if err != nil {
-		return err
-	}
-	defer w.Flush()
-
-	isTable := report.HasTable(cmd.Flag("format").Value.String())
-	if !cmd.Flag("format").Changed || isTable {
-		_ = tmpl.Execute(w, hdrs)
-	}
-	return tmpl.Execute(w, rows)
+	return rpt.Execute(rows)
 }

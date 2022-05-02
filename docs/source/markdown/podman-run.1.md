@@ -43,7 +43,7 @@ pages.
 ## IMAGE
 
   The image is specified using transport:path format. If no transport is specified, the `docker` (container registry)
-transport will be used by default. For remote Podman, `docker` is the only allowed transport.
+transport will be used by default. For remote Podman, including Mac and Windows (excluding WSL2) machines, `docker` is the only allowed transport.
 
   **dir:**_path_
   An existing local directory _path_ storing the manifest, layer tarballs and signatures as individual files. This
@@ -85,8 +85,10 @@ and specified with a _tag_.
 ## OPTIONS
 #### **--add-host**=_host_:_ip_
 
-Add a line to container's _/etc/hosts_ for custom host-to-IP mapping.
-This option can be set multiple times.
+Add a custom host-to-IP mapping (host:ip)
+
+Add a line to /etc/hosts. The format is hostname:ip. The **--add-host**
+option can be set multiple times.
 
 #### **--annotation**=_key_=_value_
 
@@ -130,6 +132,14 @@ Add Linux capabilities.
 
 Drop Linux capabilities.
 
+#### **--cgroup-conf**=*KEY=VALUE*
+
+When running on cgroup v2, specify the cgroup file to write to and its value. For example **--cgroup-conf=memory.high=1073741824** sets the memory.high limit to 1GB.
+
+#### **--cgroup-parent**=*path*
+
+Path to cgroups under which the cgroup for the container will be created. If the path is not absolute, the path is considered to be relative to the cgroups path of the init process. Cgroups will be created if they do not already exist.
+
 #### **--cgroupns**=*mode*
 
 Set the cgroup namespace mode for the container.
@@ -152,13 +162,11 @@ The **disabled** option will force the container to not create CGroups, and thus
 The **no-conmon** option disables a new CGroup only for the **conmon** process.
 The **split** option splits the current CGroup in two sub-cgroups: one for conmon and one for the container payload. It is not possible to set **--cgroup-parent** with **split**.
 
-#### **--cgroup-parent**=*path*
+#### **--chrootdirs**=*path*
 
-Path to cgroups under which the cgroup for the container will be created. If the path is not absolute, the path is considered to be relative to the cgroups path of the init process. Cgroups will be created if they do not already exist.
-
-#### **--cgroup-conf**=*KEY=VALUE*
-
-When running on cgroup v2, specify the cgroup file to write to and its value. For example **--cgroup-conf=memory.high=1073741824** sets the memory.high limit to 1GB.
+Path to a directory inside the container that should be treated as a `chroot` directory.
+Any Podman managed file (e.g., /etc/resolv.conf, /etc/hosts, etc/hostname) that is mounted into the root directory will be mounted into that location as well.
+Multiple directories should be separated with a comma.
 
 #### **--cidfile**=*file*
 
@@ -167,7 +175,7 @@ Write the container ID to *file*.
 #### **--conmon-pidfile**=*file*
 
 Write the pid of the **conmon** process to a file. As **conmon** runs in a separate process than Podman, this is necessary when using systemd to restart Podman containers.
-(This option is not available with the remote Podman client)
+(This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--cpu-period**=*limit*
 
@@ -178,7 +186,7 @@ microseconds.
 
 On some systems, changing the CPU limits may not be allowed for non-root
 users. For more details, see
-https://github.com/containers/podman/blob/master/troubleshooting.md#26-running-containers-with-cpu-limits-fails-with-a-permissions-error
+https://github.com/containers/podman/blob/main/troubleshooting.md#26-running-containers-with-cpu-limits-fails-with-a-permissions-error
 
 #### **--cpu-quota**=*limit*
 
@@ -191,7 +199,7 @@ ends (controllable via **--cpu-period**).
 
 On some systems, changing the CPU limits may not be allowed for non-root
 users. For more details, see
-https://github.com/containers/podman/blob/master/troubleshooting.md#26-running-containers-with-cpu-limits-fails-with-a-permissions-error
+https://github.com/containers/podman/blob/main/troubleshooting.md#26-running-containers-with-cpu-limits-fails-with-a-permissions-error
 
 #### **--cpu-rt-period**=*microseconds*
 
@@ -255,7 +263,7 @@ for **--cpu-period** and **--cpu-quota**, so you may only set either
 
 On some systems, changing the CPU limits may not be allowed for non-root
 users. For more details, see
-https://github.com/containers/podman/blob/master/troubleshooting.md#26-running-containers-with-cpu-limits-fails-with-a-permissions-error
+https://github.com/containers/podman/blob/main/troubleshooting.md#26-running-containers-with-cpu-limits-fails-with-a-permissions-error
 
 #### **--cpuset-cpus**=*number*
 
@@ -341,7 +349,7 @@ Set custom DNS servers. Invalid if using **--dns** with **--network** that is se
 This option can be used to override the DNS
 configuration passed to the container. Typically this is necessary when the
 host DNS configuration is invalid for the container (e.g., **127.0.0.1**). When this
-is the case the **--dns** flags is necessary for every run.
+is the case the **--dns** flag is necessary for every run.
 
 The special value **none** can be specified to disable creation of _/etc/resolv.conf_ in the container by Podman.
 The _/etc/resolv.conf_ file in the image will be used without changes.
@@ -377,17 +385,17 @@ You need to specify multi option commands in the form of a json string.
 
 Set environment variables.
 
-This option allows arbitrary environment variables that are available for the process to be launched inside of the container. If an environment variable is specified without a value, Podman will check the host environment for a value and set the variable only if it is set on the host. If an environment variable ending in __*__ is specified, Podman will search the host environment for variables starting with the prefix and will add those variables to the container. If an environment variable with a trailing ***** is specified, then a value must be supplied.
+This option allows arbitrary environment variables that are available for the process to be launched inside of the container. If an environment variable is specified without a value, Podman will check the host environment for a value and set the variable only if it is set on the host. If an environment variable ending in __*__ is specified, Podman will search the host environment for variables starting with the prefix and will add those variables to the container. If an environment variable with a trailing __*__ is specified, then a value must be supplied.
 
 See [**Environment**](#environment) note below for precedence and examples.
-
-#### **--env-host**
-
-Use host environment inside of the container. See **Environment** note below for precedence. (This option is not available with the remote Podman client)
 
 #### **--env-file**=*file*
 
 Read in a line delimited file of environment variables. See **Environment** note below for precedence.
+
+#### **--env-host**
+
+Use host environment inside of the container. See **Environment** note below for precedence. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--expose**=*port*
 
@@ -407,9 +415,11 @@ Meaning **groupname** is initially mapped to gid **100000** which is referenced 
 above: The group **groupname** is mapped to group **100000** of the initial namespace then the
 **30000**st id of this namespace (which is gid 130000 in this namespace) is mapped to container namespace group id **0**. (groupname -> 100000 / 30000 -> 0)
 
+Note: the **--gidmap** flag cannot be called in conjunction with the **--pod** flag as a gidmap cannot be set on the container level when in a pod.
+
 #### **--group-add**=*group|keep-groups*
 
-Add additional groups to assign to primary user running within the container process.
+Assign additional groups to the primary user running within the container process.
 
 - `keep-groups` is a special flag that tells Podman to keep the supplementary group access.
 
@@ -417,7 +427,7 @@ Allows container to use the user's supplementary group access. If file systems o
 devices are only accessible by the rootless user's group, this flag tells the OCI
 runtime to pass the group access into the container. Currently only available
 with the `crun` OCI runtime. Note: `keep-groups` is exclusive, you cannot add any other groups
-with this flag. (Not available for remote commands)
+with this flag. (Not available for remote commands, including Mac and Windows (excluding WSL2) machines)
 
 #### **--health-cmd**=*"command"* | *'["command", "arg1", ...]'*
 
@@ -456,6 +466,11 @@ Container host name
 
 Sets the container host name that is available inside the container. Can only be used with a private UTS namespace `--uts=private` (default). If `--pod` is specified and the pod shares the UTS namespace (default) the pod's hostname will be used.
 
+#### **--hostuser**=*name*
+
+Add a user account to /etc/passwd from the host to the container. The Username
+or UID must exist on the host system.
+
 #### **--http-proxy**
 
 By default proxy environment variables are passed into the container if set
@@ -467,7 +482,7 @@ the container should not use any proxy. Proxy environment variables specified
 for the container in any other way will override the values that would have
 been passed through from the host. (Other ways to specify the proxy for the
 container include passing the values with the **--env** flag, or hard coding the
-proxy environment at container build time.) (This option is not available with the remote Podman client)
+proxy environment at container build time.) (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 Defaults to **true**.
 
@@ -492,25 +507,36 @@ Path to the container-init binary.
 
 When set to **true**, keep stdin open even if not attached. The default is **false**.
 
-#### **--ip6**=*ip*
+#### **--ip**=*ipv4*
 
-Not implemented.
+Specify a static IPv4 address for the container, for example **10.88.64.128**.
+This option can only be used if the container is joined to only a single network - i.e., **--network=network-name** is used at most once -
+and if the container is not joining another container's network namespace via **--network=container:_id_**.
+The address must be within the network's IP address pool (default **10.88.0.0/16**).
 
-#### **--ip**=*ip*
+To specify multiple static IP addresses per container, set multiple networks using the **--network** option with a static IP address specified for each using the `ip` mode for that option.
 
-Specify a static IP address for the container, for example **10.88.64.128**.
-This option can only be used if the container is joined to only a single network - i.e., `--network=_network-name_` is used at most once
-and if the container is not joining another container's network namespace via `--network=container:_id_`.
-The address must be within the CNI network's IP address pool (default **10.88.0.0/16**).
+#### **--ip6**=*ipv6*
+
+Specify a static IPv6 address for the container, for example **fd46:db93:aa76:ac37::10**.
+This option can only be used if the container is joined to only a single network - i.e., **--network=network-name** is used at most once -
+and if the container is not joining another container's network namespace via **--network=container:_id_**.
+The address must be within the network's IPv6 address pool.
+
+To specify multiple static IPv6 addresses per container, set multiple networks using the **--network** option with a static IPv6 address specified for each using the `ip6` mode for that option.
 
 #### **--ipc**=*mode*
 
 Set the IPC namespace mode for a container. The default is to create
 a private IPC namespace.
 
+- "": Use Podman's default, defined in containers.conf.
 - **container:**_id_: reuses another container shared memory, semaphores and message queues
 - **host**: use the host shared memory,semaphores and message queues inside the container. Note: the host mode gives the container full access to local shared memory and is therefore considered insecure.
+- **none**:  private IPC namespace, with /dev/shm not mounted.
 - **ns:**_path_: path to an IPC namespace to join.
+- **private**: private IPC namespace.
+= **shareable**: private IPC namespace with a possibility to share it with  other containers.
 
 #### **--label**, **-l**=*key*=*value*
 
@@ -534,7 +560,7 @@ $ podman info --format '{{ .Host.LogDriver }}'
 journald
 ```
 The **passthrough** driver passes down the standard streams (stdin, stdout, stderr) to the
-container.  It is not allowed with the remote Podman client and on a tty, since it is
+container.  It is not allowed with the remote Podman client, including Mac and Windows (excluding WSL2) machines, and on a tty, since it is
 vulnerable to attacks via TIOCSTI.
 
 
@@ -557,11 +583,15 @@ This option is currently supported only by the **journald** log driver.
 
 #### **--mac-address**=*address*
 
-Container MAC address (e.g. **92:d0:c6:0a:29:33**).
+Container network interface MAC address (e.g. 92:d0:c6:0a:29:33)
+This option can only be used if the container is joined to only a single network - i.e., **--network=_network-name_** is used at most once -
+and if the container is not joining another container's network namespace via **--network=container:_id_**.
 
 Remember that the MAC address in an Ethernet network must be unique.
 The IPv6 link-local address will be based on the device's MAC address
 according to RFC4862.
+
+To specify multiple static MAC addresses per container, set multiple networks using the **--network** option with a static MAC address specified for each using the `mac` mode for that option.
 
 #### **--memory**, **-m**=_number_[_unit_]
 
@@ -633,7 +663,9 @@ Current supported mount TYPEs are **bind**, **volume**, **image**, **tmpfs** and
 
 	      · ro, readonly: true or false (default).
 
-        . U, chown: true or false (default). Change recursively the owner and group of the source volume based on the UID and GID of the container.
+	      . U, chown: true or false (default). Change recursively the owner and group of the source volume based on the UID and GID of the container.
+
+	      · idmap: true or false (default).  If specified, create an idmapped mount to the target user namespace in the container.
 
        Options specific to image:
 
@@ -649,7 +681,9 @@ Current supported mount TYPEs are **bind**, **volume**, **image**, **tmpfs** and
 
 	      . relabel: shared, private.
 
-        . U, chown: true or false (default). Change recursively the owner and group of the source volume based on the UID and GID of the container.
+	      · idmap: true or false (default).  If specified, create an idmapped mount to the target user namespace in the container.
+
+	      . U, chown: true or false (default). Change recursively the owner and group of the source volume based on the UID and GID of the container.
 
        Options specific to tmpfs:
 
@@ -663,7 +697,17 @@ Current supported mount TYPEs are **bind**, **volume**, **image**, **tmpfs** and
 
 	      · notmpcopyup: Disable copying files from the image to the tmpfs.
 
-        . U, chown: true or false (default). Change recursively the owner and group of the source volume based on the UID and GID of the container.
+	      . U, chown: true or false (default). Change recursively the owner and group of the source volume based on the UID and GID of the container.
+
+       Options specific to devpts:
+
+	      · uid: UID of the file owner (default 0).
+
+	      · gid: GID of the file owner (default 0).
+
+	      · mode: permission mask for the file (default 600).
+
+	      · max: maximum number of PTYs (default 1048576).
 
 #### **--name**=*name*
 
@@ -682,33 +726,42 @@ This works for both background and foreground containers.
 
 #### **--network**=*mode*, **--net**
 
-Set the network mode for the container. Invalid if using **--dns**, **--dns-opt**, or **--dns-search** with **--network** that is set to **none** or **container:**_id_. If used together with **--pod**, the container will not join the pods network namespace.
+Set the network mode for the container. Invalid if using **--dns**, **--dns-opt**, or **--dns-search** with **--network** set to **none** or **container:**_id_. If used together with **--pod**, the container will not join the pod's network namespace.
 
 Valid _mode_ values are:
 
-- **bridge**: Create a network stack on the default bridge. This is the default for rootfull containers.
+- **bridge[:OPTIONS,...]**: Create a network stack on the default bridge. This is the default for rootful containers. It is possible to specify these additional options:
+  - **alias=name**: Add network-scoped alias for the container.
+  - **ip=IPv4**: Specify a static ipv4 address for this container.
+  - **ip=IPv6**: Specify a static ipv6 address for this container.
+  - **mac=MAC**: Specify a static mac address for this container.
+  - **interface_name**: Specify a name for the created network interface inside the container.
+
+  For example to set a static ipv4 address and a static mac address, use `--network bridge:ip=10.88.0.10,mac=44:33:22:11:00:99`.
+- \<network name or ID\>[:OPTIONS,...]: Connect to a user-defined network; this is the network name or ID from a network created by **[podman network create](podman-network-create.1.md)**. Using the network name implies the bridge network mode. It is possible to specify the same options described under the bridge mode above. You can use the **--network** option multiple times to specify additional networks.
 - **none**: Create a network namespace for the container but do not configure network interfaces for it, thus the container has no network connectivity.
 - **container:**_id_: Reuse another container's network stack.
 - **host**: Do not create a network namespace, the container will use the host's network. Note: The host mode gives the container full access to local system services such as D-bus and is therefore considered insecure.
-- **network**: Connect to a user-defined network, multiple networks should be comma-separated.
 - **ns:**_path_: Path to a network namespace to join.
-- **private**: Create a new namespace for the container. This will use the **bridge** mode for rootfull containers and **slirp4netns** for rootless ones.
-- **slirp4netns[:OPTIONS,...]**: use **slirp4netns**(1) to create a user network stack. This is the default for rootless containers. It is possible to specify these additional options:
-  - **allow_host_loopback=true|false**: Allow the slirp4netns to reach the host loopback IP (`10.0.2.2`, which is added to `/etc/hosts` as `host.containers.internal` for your convenience). Default is false.
+- **private**: Create a new namespace for the container. This will use the **bridge** mode for rootful containers and **slirp4netns** for rootless ones.
+- **slirp4netns[:OPTIONS,...]**: use **slirp4netns**(1) to create a user network stack. This is the default for rootless containers. It is possible to specify these additional options, they can also be set with `network_cmd_options` in containers.conf:
+  - **allow_host_loopback=true|false**: Allow the slirp4netns to reach the host loopback IP (`10.0.2.2`). Default is false.
   - **mtu=MTU**: Specify the MTU to use for this network. (Default is `65520`).
   - **cidr=CIDR**: Specify ip range to use for this network. (Default is `10.0.2.0/24`).
-  - **enable_ipv6=true|false**: Enable IPv6. Default is false. (Required for `outbound_addr6`).
+  - **enable_ipv6=true|false**: Enable IPv6. Default is true. (Required for `outbound_addr6`).
   - **outbound_addr=INTERFACE**: Specify the outbound interface slirp should bind to (ipv4 traffic only).
   - **outbound_addr=IPv4**: Specify the outbound ipv4 address slirp should bind to.
   - **outbound_addr6=INTERFACE**: Specify the outbound interface slirp should bind to (ipv6 traffic only).
   - **outbound_addr6=IPv6**: Specify the outbound ipv6 address slirp should bind to.
   - **port_handler=rootlesskit**: Use rootlesskit for port forwarding. Default.
-  Note: Rootlesskit changes the source IP address of incoming packets to a IP address in the container network namespace, usually `10.0.2.100`. If your application requires the real source IP address, e.g. web server logs, use the slirp4netns port handler. The rootlesskit port handler is also used for rootless containers when connected to user-defined networks.
+  Note: Rootlesskit changes the source IP address of incoming packets to an IP address in the container network namespace, usually `10.0.2.100`. If your application requires the real source IP address, e.g. web server logs, use the slirp4netns port handler. The rootlesskit port handler is also used for rootless containers when connected to user-defined networks.
   - **port_handler=slirp4netns**: Use the slirp4netns port forwarding, it is slower than rootlesskit but preserves the correct source IP address. This port handler cannot be used for user-defined networks.
 
 #### **--network-alias**=*alias*
 
-Add network-scoped alias for the container.  NOTE: A container will only have access to aliases on the first network that it joins. This is a limitation that will be removed in a later release.
+Add a network-scoped alias for the container, setting the alias for all networks that the container joins. To set a name only for a specific network, use the alias option as described under the **--network** option.
+Network aliases work only with the bridge networking mode. This option can be specified multiple times.
+NOTE: A container will only have access to aliases on the first network that it joins. This is a limitation that will be removed in a later release.
 
 #### **--no-healthcheck**
 
@@ -717,14 +770,15 @@ Disable any defined healthchecks for container.
 #### **--no-hosts**
 
 Do not create _/etc/hosts_ for the container.
-
 By default, Podman will manage _/etc/hosts_, adding the container's own IP address and any hosts from **--add-host**.
-#### **--no-hosts** disables this, and the image's _/etc/hosts_ will be preserved unmodified.
+**--no-hosts** disables this, and the image's _/etc/hosts_ will be preserved unmodified.
 This option conflicts with **--add-host**.
 
 #### **--oom-kill-disable**
 
 Whether to disable OOM Killer for the container or not.
+
+This flag is not supported on cgroups V2 systems.
 
 #### **--oom-score-adj**=*num*
 
@@ -732,6 +786,17 @@ Tune the host's OOM preferences for containers (accepts values from **-1000** to
 
 #### **--os**=*OS*
 Override the OS, defaults to hosts, of the image to be pulled. For example, `windows`.
+
+#### **--passwd**
+
+Allow Podman to add entries to /etc/passwd and /etc/group when used in conjunction with the --user option.
+This is used to override the Podman provided user setup in favor of entrypoint configurations such as libnss-extrausers.
+
+#### **--passwd-entry**=*ENTRY*
+
+Customize the entry that is written to the `/etc/passwd` file within the container when `--passwd` is used.
+
+The variables $USERNAME, $UID, $GID, $NAME, $HOME are automatically replaced with their value at runtime.
 
 #### **--personality**=*persona*
 
@@ -746,6 +811,16 @@ The default is to create a private PID namespace for the container.
 - **host**: use the host's PID namespace for the container. Note the host mode gives the container full access to local PID and is therefore considered insecure;
 - **private**: create a new namespace for the container (default)
 - **ns:**_path_: join the specified PID namespace.
+
+#### **--pidfile**=*path*
+
+When the pidfile location is specified, the container process' PID will be written to the pidfile. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
+If the pidfile option is not specified, the container process' PID will be written to /run/containers/storage/${storage-driver}-containers/$CID/userdata/pidfile.
+
+After the container is started, the location for the pidfile can be discovered with the following `podman inspect` command:
+
+    $ podman inspect --format '{{ .PidFile }}' $CID
+    /run/containers/storage/${storage-driver}-containers/$CID/userdata/pidfile
 
 #### **--pids-limit**=*limit*
 
@@ -770,7 +845,7 @@ If a container is run within a pod, and the pod has an infra-container, the infr
 #### **--preserve-fds**=*N*
 
 Pass down to the process N additional file descriptors (in addition to 0, 1, 2).
-The total FDs will be 3+N. (This option is not available with the remote Podman client)
+The total FDs will be 3+N. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--privileged**
 
@@ -963,8 +1038,8 @@ Note: Labeling can be disabled for all containers by setting label=false in the 
 
 - **no-new-privileges**: Disable container processes from gaining additional privileges
 
-- **seccomp=unconfined**: Turn off seccomp confinement for the container
-- **seccomp**=_profile.json_: Allowed syscall list seccomp JSON file to be used as a seccomp filter
+- **seccomp=unconfined**: Turn off seccomp confinement for the container.
+- **seccomp=profile.json**: JSON file to be used as a seccomp filter. Note that the `io.podman.annotations.seccomp` annotation is set with the specified value as shown in `podman inspect`.
 
 - **proc-opts**=_OPTIONS_ : Comma-separated list of options to use for the /proc mount. More details
   for the possible mount options are specified in the **proc(5)** man page.
@@ -1034,20 +1109,21 @@ Note: if you use the **--network=host** option, these sysctls will not be allowe
 Run container in systemd mode. The default is **true**.
 
 The value *always* enforces the systemd mode is enforced without
-looking at the executable name. Otherwise, if set to **true** and the
-command you are running inside the container is systemd, _/usr/sbin/init_,
-_/sbin/init_ or _/usr/local/sbin/init_.
+looking at the executable name. Otherwise, if set to true and the
+command you are running inside the container is **systemd**, **/usr/sbin/init**,
+**/sbin/init** or **/usr/local/sbin/init**.
 
-If the command you are running inside of the container is systemd
-Podman will setup tmpfs mount points in the following directories:
+Running the container in systemd mode causes the following changes:
 
-- _/run_
-- _/run/lock_
-- _/tmp_
-- _/sys/fs/cgroup/systemd_
-- _/var/lib/journal_
-
-It will also set the default stop signal to **SIGRTMIN+3**.
+* Podman mounts tmpfs file systems on the following directories
+  * _/run_
+  * _/run/lock_
+  * _/tmp_
+  * _/sys/fs/cgroup/systemd_
+  * _/var/lib/journal_
+* Podman sets the default stop signal to **SIGRTMIN+3**.
+* Podman sets **container_uuid** environment variable in the container to the
+first 32 characters of the container id.
 
 This allows systemd to run in a confined container without any modifications.
 
@@ -1102,11 +1178,6 @@ echo "asdf" | podman run --rm -i someimage /bin/cat
 Set timezone in container. This flag takes area-based timezones, GMT time, as well as `local`, which sets the timezone in the container to match the host machine. See `/usr/share/zoneinfo/` for valid timezones.
 Remote connections use local containers.conf for defaults
 
-#### **--umask**=*umask*
-
-Set the umask inside the container. Defaults to `0022`.
-Remote connections use local containers.conf for defaults
-
 #### **--uidmap**=*container_uid*:*from_uid*:*amount*
 
 Run the container in a new user namespace using the supplied mapping. This
@@ -1114,8 +1185,8 @@ option conflicts with the **--userns** and **--subuidname** options. This
 option provides a way to map host UIDs to container UIDs. It can be passed
 several times to map different ranges.
 
-The _from_uid_ value is based upon the user running the command, either rootfull or rootless users.
-* rootfull user:  *container_uid*:*host_uid*:*amount*
+The _from_uid_ value is based upon the user running the command, either rootful or rootless users.
+* rootful user:  *container_uid*:*host_uid*:*amount*
 * rootless user: *container_uid*:*intermediate_uid*:*amount*
 
 When **podman run** is called by a privileged user, the option **--uidmap**
@@ -1170,13 +1241,43 @@ If for example _amount_ is **5** the second mapping step would look like:
 | _from_uid_ + 3       | _container_uid_ + 3 |
 | _from_uid_ + 4       | _container_uid_ + 4 |
 
+When running as rootless, Podman will use all the ranges configured in the _/etc/subuid_ file.
+
+The current user ID is mapped to UID=0 in the rootless user namespace.
+Every additional range is added sequentially afterward:
+
+|   host                |rootless user namespace | length              |
+| -                     | -                      | -                   |
+| $UID                  | 0                      | 1                   |
+| 1                     | $FIRST_RANGE_ID        | $FIRST_RANGE_LENGTH |
+| 1+$FIRST_RANGE_LENGTH | $SECOND_RANGE_ID       | $SECOND_RANGE_LENGTH|
+
 Even if a user does not have any subordinate UIDs in  _/etc/subuid_,
 **--uidmap** could still be used to map the normal UID of the user to a
 container UID by running `podman run --uidmap $container_uid:0:1 --user $container_uid ...`.
 
+Note: the **--uidmap** flag cannot be called in conjunction with the **--pod** flag as a uidmap cannot be set on the container level when in a pod.
+
 #### **--ulimit**=*option*
 
 Ulimit options. You can use **host** to copy the current configuration from the host.
+
+#### **--umask**=*umask*
+
+Set the umask inside the container. Defaults to `0022`.
+Remote connections use local containers.conf for defaults
+
+#### **--unsetenv**=*env*
+
+Unset default environment variables for the container. Default environment
+variables include variables provided natively by Podman, environment variables
+configured by the image, and environment variables from containers.conf.
+
+#### **--unsetenv-all**=*true|false*
+
+Unset all default environment variables for the container. Default environment
+variables include variables provided natively by Podman, environment variables
+configured by the image, and environment variables from containers.conf.
 
 #### **--user**, **-u**=[_user_ | _user_:_group_ | _uid_ | _uid_:_gid_ | _user_:_gid_ | _uid_:_group_ ]
 
@@ -1190,6 +1291,15 @@ When a user namespace is not in use, the UID and GID used within the container a
 
 Set the user namespace mode for the container. It defaults to the **PODMAN_USERNS** environment variable. An empty value ("") means user namespaces are disabled unless an explicit mapping is set with the **--uidmap** and **--gidmap** options.
 
+Rootless user --userns=Key mappings:
+
+Key       | Host User |  Container User
+----------|---------------|---------------------
+""        |$UID           |0 (Default User account mapped to root user in container.)
+keep-id   |$UID           |$UID (Map user account to same UID within container.)
+auto      |$UID           | nil (Host User UID is not mapped into container.)
+nomap     |$UID           | nil (Host User UID is not mapped into container.)
+
 Valid _mode_ values are:
 
 **auto**[:_OPTIONS,..._]: automatically create a unique user namespace.
@@ -1198,7 +1308,9 @@ The `--userns=auto` flag, requires that the user name `containers` and a range o
 
 Example: `containers:2147483647:2147483648`.
 
-Podman allocates unique ranges of UIDs and GIDs from the `containers` subpordinate user ids. The size of the ranges is based on the number of UIDs required in the image. The number of UIDs and GIDs can be overridden with the `size` option. The `auto` options currently does not work in rootless mode
+Podman allocates unique ranges of UIDs and GIDs from the `containers` subordinate user ids. The size of the ranges is based on the number of UIDs required in the image. The number of UIDs and GIDs can be overridden with the `size` option.
+
+The rootless option `--userns=keep-id` uses all the subuids and subgids of the user. Using `--userns=auto` when starting new containers will not work as long as any containers exist that were started with `--userns=keep-id`.
 
   Valid `auto` options:
 
@@ -1212,10 +1324,11 @@ Podman allocates unique ranges of UIDs and GIDs from the `containers` subpordina
 
 **keep-id**: creates a user namespace where the current rootless user's UID:GID are mapped to the same values in the container. This option is ignored for containers created by the root user.
 
+**nomap**: creates a user namespace where the current rootless user's UID:GID are not mapped into the container. This option is ignored for containers created by the root user.
+
 **ns:**_namespace_: run the container in the given existing user namespace.
 
 **private**: create a new namespace for the container.
-
 This option is incompatible with **--gidmap**, **--uidmap**, **--subuidname** and **--subgidname**.
 
 #### **--uts**=*mode*
@@ -1236,7 +1349,7 @@ Create a bind mount. If you specify _/HOST-DIR_:_/CONTAINER-DIR_, Podman
 bind mounts _host-dir_ in the host to _CONTAINER-DIR_ in the Podman
 container. Similarly, _SOURCE-VOLUME_:_/CONTAINER-DIR_ will mount the volume
 in the host to the container. If no such named volume exists, Podman will
-create one. (Note when using the remote client, the volumes will be mounted from the remote server, not necessarily the client machine.)
+create one. (Note when using the remote client, including Mac and Windows (excluding WSL2) machines, the volumes will be mounted from the remote server, not necessarily the client machine.)
 
 The _options_ is a comma-separated list and can be: <sup>[[1]](#Footnote1)</sup>
 
@@ -1304,6 +1417,15 @@ share the volume content. As a result, Podman labels the content with a shared
 content label. Shared volume labels allow all containers to read/write content.
 The **Z** option tells Podman to label the content with a private unshared label.
 
+Note: Do not relabel system files and directories. Relabeling system content
+might cause other confined services on your machine to fail.  For these types
+of containers we recommend disabling SELinux separation.  The option
+`--security-opt label=disable` disables SELinux separation for the container.
+For example if a user wanted to volume mount their entire home directory into a
+container, they need to disable SELinux separation.
+
+	   $ podman run --security-opt label=disable -v $HOME:/home/user fedora touch /home/user/file
+
   `Overlay Volume Mounts`
 
    The `:O` flag tells Podman to mount the directory from the host as a
@@ -1313,6 +1435,10 @@ container storage in a separate directory. In overlay terms, the source
 directory will be the lower, and the container storage directory will be the
 upper. Modifications to the mount point are destroyed when the container
 finishes executing, similar to a tmpfs mount point being unmounted.
+
+  For advanced users overlay option also supports custom non-volatile `upperdir` and `workdir`
+for the overlay mount. Custom `upperdir` and `workdir` can be fully managed by the users themselves
+and `podman` will not remove it on lifecycle completion. Example `:O,upperdir=/some/upper,workdir=/some/work`
 
   Subsequent executions of the container will see the original source directory
 content, any changes from previous container executions no longer exist.
@@ -1364,7 +1490,7 @@ the volume will not be able to change their privilege. By default volumes
 are mounted with **nosuid**.
 
 Mounting the volume with the **noexec** option means that no executables on the
-volume will be able to executed within the container.
+volume will be able to be executed within the container.
 
 Mounting the volume with the **nodev** option means that no devices on the volume
 will be able to be used by processes within the container. By default volumes
@@ -1432,16 +1558,6 @@ Working directory inside the container.
 The default working directory for running binaries within a container is the root directory (**/**).
 The image developer can set a different default with the WORKDIR instruction. The operator
 can override the working directory by using the **-w** option.
-
-#### **--pidfile**=*path*
-
-When the pidfile location is specified, the container process' PID will be written to the pidfile. (This option is not available with the remote Podman client)
-If the pidfile option is not specified, the container process' PID will be written to /run/containers/storage/${storage-driver}-containers/$CID/userdata/pidfile.
-
-After the container is started, the location for the pidfile can be discovered with the following `podman inspect` command:
-
-    $ podman inspect --format '{{ .PidFile }}' $CID
-    /run/containers/storage/${storage-driver}-containers/$CID/userdata/pidfile
 
 ## Exit Status
 
@@ -1813,12 +1929,35 @@ $ podman run --name container1 --personaity=LINUX32 fedora bash
 $ podman run --name container1 --rootfs /path/to/rootfs:O bash
 ```
 
+### Handling Timezones in java applications in a container.
+
+In order to use a timezone other than UTC when running a
+Java application within a container, the `TZ` environment variable must be
+set within the container. Java applications will ignore the value set with the
+`--tz` option.
+
+```
+# Example run
+podman run -ti --rm  -e TZ=EST mytzimage
+lrwxrwxrwx. 1 root root 29 Nov  3 08:51 /etc/localtime -> ../usr/share/zoneinfo/Etc/UTC
+Now with default timezone:
+Fri Nov 19 18:10:55 EST 2021
+Java default sees the following timezone:
+2021-11-19T18:10:55.651130-05:00
+Forcing UTC:
+Fri Nov 19 23:10:55 UTC 2021
+```
+
+### Run a container connected to two networks (called net1 and net2) with a static ip
+
+```
+$ podman run --network net1:ip=10.89.1.5 --network net2:ip=10.89.10.10 alpine ip addr
+```
+
 ### Rootless Containers
 
-Podman runs as a non root user on most systems. This feature requires that a new enough version of **shadow-utils**
+Podman runs as a non-root user on most systems. This feature requires that a new enough version of **shadow-utils**
 be installed. The **shadow-utils** package must include the **newuidmap**(1) and **newgidmap**(1) executables.
-
-Note: RHEL7 and Centos 7 will not have this feature until RHEL7.7 is released.
 
 In order for users to run rootless, there must be an entry for their username in _/etc/subuid_ and _/etc/subgid_ which lists the UIDs for their user namespace.
 
@@ -1872,8 +2011,7 @@ page.
 NOTE: Use the environment variable `TMPDIR` to change the temporary storage location of downloaded container images. Podman defaults to use `/var/tmp`.
 
 ## SEE ALSO
-**podman**(1), **podman-save**(1), **podman-ps**(1), **podman-attach**(1), **podman-pod-create**(1), **podman-port**(1), **podman-start**(1), **podman-kill**(1), **podman-stop**(1),
-**podman-generate-systemd**(1) **podman-rm**(1), **subgid**(5), **subuid**(5), **containers.conf**(5), **systemd.unit**(5), **setsebool**(8), **slirp4netns**(1), **fuse-overlayfs**(1), **proc**(5), **conmon**(8), **personality**(2).
+**[podman(1)](podman.1.md)**, **[podman-save(1)](podman-save.1.md)**, **[podman-ps(1)](podman-ps.1.md)**, **[podman-attach(1)](podman-attach.1.md)**, **[podman-pod-create(1)](podman-pod-create.1.md)**, **[podman-port(1)](podman-port.1.md)**, **[podman-start(1)](podman-start.1.md)**, **[podman-kill(1)](podman-kill.1.md)**, **[podman-stop(1)](podman-stop.1.md)**, **[podman-generate-systemd(1)](podman-generate-systemd.1.md)**, **[podman-rm(1)](podman-rm.1.md)**, **[subgid(5)](https://www.unix.com/man-page/linux/5/subgid)**, **[subuid(5)](https://www.unix.com/man-page/linux/5/subuid)**, **[containers.conf(5)](https://github.com/containers/common/blob/main/docs/containers.conf.5.md)**, **[systemd.unit(5)](https://www.freedesktop.org/software/systemd/man/systemd.unit.html)**, **[setsebool(8)](https://man7.org/linux/man-pages/man8/setsebool.8.html)**, **[slirp4netns(1)](https://github.com/rootless-containers/slirp4netns/blob/master/slirp4netns.1.md)**, **[fuse-overlayfs(1)](https://github.com/containers/fuse-overlayfs/blob/main/fuse-overlayfs.1.md)**, **proc(5)**, **[conmon(8)](https://github.com/containers/conmon/blob/main/docs/conmon.8.md)**, **personality(2)**
 
 ## HISTORY
 September 2018, updated by Kunal Kushwaha `<kushwaha_kunal_v7@lab.ntt.co.jp>`

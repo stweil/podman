@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/bindings"
-	"github.com/containers/podman/v3/pkg/domain/entities"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/bindings"
+	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -27,7 +27,7 @@ func Events(ctx context.Context, eventChan chan entities.Event, cancelChan chan 
 	if err != nil {
 		return err
 	}
-	response, err := conn.DoRequest(nil, http.MethodGet, "/events", params, nil)
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/events", params, nil)
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func Prune(ctx context.Context, options *PruneOptions) (*entities.SystemPruneRep
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodPost, "/system/prune", params, nil)
+	response, err := conn.DoRequest(ctx, nil, http.MethodPost, "/system/prune", params, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func Version(ctx context.Context, options *VersionOptions) (*entities.SystemVers
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodGet, "/version", nil, nil)
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/version", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +120,7 @@ func Version(ctx context.Context, options *VersionOptions) (*entities.SystemVers
 		BuiltTime:  time.Unix(b.Unix(), 0).Format(time.ANSIC),
 		Built:      b.Unix(),
 		OsArch:     fmt.Sprintf("%s/%s", component.Os, component.Arch),
+		Os:         component.Os,
 	}
 
 	for _, c := range component.Components {
@@ -142,7 +143,7 @@ func DiskUsage(ctx context.Context, options *DiskOptions) (*entities.SystemDfRep
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodGet, "/system/df", nil, nil)
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/system/df", nil, nil)
 	if err != nil {
 		return nil, err
 	}

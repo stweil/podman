@@ -8,16 +8,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/manifest"
-	"github.com/containers/podman/v3/cmd/podman/parse"
-	"github.com/containers/podman/v3/libpod/define"
-	ann "github.com/containers/podman/v3/pkg/annotations"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	envLib "github.com/containers/podman/v3/pkg/env"
-	"github.com/containers/podman/v3/pkg/namespaces"
-	"github.com/containers/podman/v3/pkg/specgen"
-	systemdDefine "github.com/containers/podman/v3/pkg/systemd/define"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/podman/v4/cmd/podman/parse"
+	"github.com/containers/podman/v4/libpod/define"
+	ann "github.com/containers/podman/v4/pkg/annotations"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	envLib "github.com/containers/podman/v4/pkg/env"
+	"github.com/containers/podman/v4/pkg/namespaces"
+	"github.com/containers/podman/v4/pkg/specgen"
+	systemdDefine "github.com/containers/podman/v4/pkg/systemd/define"
+	"github.com/containers/podman/v4/pkg/util"
+	"github.com/docker/docker/opts"
 	"github.com/docker/go-units"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
@@ -84,7 +86,7 @@ func getIOLimits(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions) (
 	}
 
 	if len(c.BlkIOWeightDevice) > 0 {
-		if err := parseWeightDevices(s, c.BlkIOWeightDevice); err != nil {
+		if s.WeightDevice, err = parseWeightDevices(c.BlkIOWeightDevice); err != nil {
 			return nil, err
 		}
 		hasLimits = true
@@ -124,7 +126,17 @@ func getIOLimits(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions) (
 	return io, nil
 }
 
-func getMemoryLimits(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions) (*specs.LinuxMemory, error) {
+func LimitToSwap(memory *specs.LinuxMemory, swap string, ml int64) {
+	if ml > 0 {
+		memory.Limit = &ml
+		if swap == "" {
+			limit := 2 * ml
+			memory.Swap = &(limit)
+		}
+	}
+}
+
+func getMemoryLimits(c *entities.ContainerCreateOptions) (*specs.LinuxMemory, error) {
 	var err error
 	memory := &specs.LinuxMemory{}
 	hasLimits := false
@@ -133,14 +145,8 @@ func getMemoryLimits(s *specgen.SpecGenerator, c *entities.ContainerCreateOption
 		if err != nil {
 			return nil, errors.Wrapf(err, "invalid value for memory")
 		}
-		if ml > 0 {
-			memory.Limit = &ml
-			if c.MemorySwap == "" {
-				limit := 2 * ml
-				memory.Swap = &(limit)
-			}
-			hasLimits = true
-		}
+		LimitToSwap(memory, c.MemorySwap, ml)
+		hasLimits = true
 	}
 	if m := c.MemoryReservation; len(m) > 0 {
 		mr, err := units.RAMInBytes(m)
@@ -163,15 +169,7 @@ func getMemoryLimits(s *specgen.SpecGenerator, c *entities.ContainerCreateOption
 			hasLimits = true
 		}
 	}
-	if m := c.KernelMemory; len(m) > 0 {
-		mk, err := units.RAMInBytes(m)
-		if err != nil {
-			return nil, errors.Wrapf(err, "invalid value for kernel-memory")
-		}
-		memory.Kernel = &mk
-		hasLimits = true
-	}
-	if c.MemorySwappiness > 0 {
+	if c.MemorySwappiness >= 0 {
 		swappiness := uint64(c.MemorySwappiness)
 		memory.Swappiness = &swappiness
 		hasLimits = true
@@ -196,7 +194,7 @@ func setNamespaces(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions)
 		}
 	}
 	if c.IPC != "" {
-		s.IpcNS, err = specgen.ParseNamespace(c.IPC)
+		s.IpcNS, err = specgen.ParseIPCNamespace(c.IPC)
 		if err != nil {
 			return err
 		}
@@ -213,9 +211,13 @@ func setNamespaces(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions)
 			return err
 		}
 	}
-	// userns must be treated differently
+	userns := os.Getenv("PODMAN_USERNS")
 	if c.UserNS != "" {
-		s.UserNS, err = specgen.ParseUserNamespace(c.UserNS)
+		userns = c.UserNS
+	}
+	// userns must be treated differently
+	if userns != "" {
+		s.UserNS, err = specgen.ParseUserNamespace(userns)
 		if err != nil {
 			return err
 		}
@@ -258,38 +260,43 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 	if err := setNamespaces(s, c); err != nil {
 		return err
 	}
-	userNS := namespaces.UsernsMode(s.UserNS.NSMode)
-	tempIDMap, err := util.ParseIDMapping(namespaces.UsernsMode(c.UserNS), []string{}, []string{}, "", "")
-	if err != nil {
-		return err
-	}
-	s.IDMappings, err = util.ParseIDMapping(userNS, c.UIDMap, c.GIDMap, c.SubUIDName, c.SubGIDName)
-	if err != nil {
-		return err
-	}
-	if len(s.IDMappings.GIDMap) == 0 {
-		s.IDMappings.AutoUserNsOpts.AdditionalGIDMappings = tempIDMap.AutoUserNsOpts.AdditionalGIDMappings
-		if s.UserNS.NSMode == specgen.NamespaceMode("auto") {
-			s.IDMappings.AutoUserNs = true
+
+	if s.IDMappings == nil {
+		userNS := namespaces.UsernsMode(s.UserNS.NSMode)
+		tempIDMap, err := util.ParseIDMapping(namespaces.UsernsMode(c.UserNS), []string{}, []string{}, "", "")
+		if err != nil {
+			return err
 		}
-	}
-	if len(s.IDMappings.UIDMap) == 0 {
-		s.IDMappings.AutoUserNsOpts.AdditionalUIDMappings = tempIDMap.AutoUserNsOpts.AdditionalUIDMappings
-		if s.UserNS.NSMode == specgen.NamespaceMode("auto") {
-			s.IDMappings.AutoUserNs = true
+		s.IDMappings, err = util.ParseIDMapping(userNS, c.UIDMap, c.GIDMap, c.SubUIDName, c.SubGIDName)
+		if err != nil {
+			return err
 		}
-	}
-	if tempIDMap.AutoUserNsOpts.Size != 0 {
-		s.IDMappings.AutoUserNsOpts.Size = tempIDMap.AutoUserNsOpts.Size
-	}
-	// If some mappings are specified, assume a private user namespace
-	if userNS.IsDefaultValue() && (!s.IDMappings.HostUIDMapping || !s.IDMappings.HostGIDMapping) {
-		s.UserNS.NSMode = specgen.Private
-	} else {
-		s.UserNS.NSMode = specgen.NamespaceMode(userNS)
+		if len(s.IDMappings.GIDMap) == 0 {
+			s.IDMappings.AutoUserNsOpts.AdditionalGIDMappings = tempIDMap.AutoUserNsOpts.AdditionalGIDMappings
+			if s.UserNS.NSMode == specgen.NamespaceMode("auto") {
+				s.IDMappings.AutoUserNs = true
+			}
+		}
+		if len(s.IDMappings.UIDMap) == 0 {
+			s.IDMappings.AutoUserNsOpts.AdditionalUIDMappings = tempIDMap.AutoUserNsOpts.AdditionalUIDMappings
+			if s.UserNS.NSMode == specgen.NamespaceMode("auto") {
+				s.IDMappings.AutoUserNs = true
+			}
+		}
+		if tempIDMap.AutoUserNsOpts.Size != 0 {
+			s.IDMappings.AutoUserNsOpts.Size = tempIDMap.AutoUserNsOpts.Size
+		}
+		// If some mappings are specified, assume a private user namespace
+		if userNS.IsDefaultValue() && (!s.IDMappings.HostUIDMapping || !s.IDMappings.HostGIDMapping) {
+			s.UserNS.NSMode = specgen.Private
+		} else {
+			s.UserNS.NSMode = specgen.NamespaceMode(userNS)
+		}
 	}
 
-	s.Terminal = c.TTY
+	if !s.Terminal {
+		s.Terminal = c.TTY
+	}
 
 	if err := verifyExpose(c.Expose); err != nil {
 		return err
@@ -299,8 +306,13 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 	if c.Net != nil {
 		s.PortMappings = c.Net.PublishPorts
 	}
-	s.PublishExposedPorts = c.PublishAll
-	s.Pod = c.Pod
+	if !s.PublishExposedPorts {
+		s.PublishExposedPorts = c.PublishAll
+	}
+
+	if len(s.Pod) == 0 {
+		s.Pod = c.Pod
+	}
 
 	if len(c.PodIDFile) > 0 {
 		if len(s.Pod) > 0 {
@@ -313,11 +325,14 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 		s.Pod = podID
 	}
 
-	expose, err := createExpose(c.Expose)
+	expose, err := CreateExpose(c.Expose)
 	if err != nil {
 		return err
 	}
-	s.Expose = expose
+
+	if len(s.Expose) == 0 {
+		s.Expose = expose
+	}
 
 	if sig := c.StopSignal; len(sig) > 0 {
 		stopSignal, err := util.ParseSignal(sig)
@@ -343,8 +358,13 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 		return errors.Wrap(err, "error parsing host environment variables")
 	}
 
-	s.EnvHost = c.EnvHost
-	s.HTTPProxy = c.HTTPProxy
+	if !s.EnvHost {
+		s.EnvHost = c.EnvHost
+	}
+
+	if !s.HTTPProxy {
+		s.HTTPProxy = c.HTTPProxy
+	}
 
 	// env-file overrides any previous variables
 	for _, f := range c.EnvFile {
@@ -361,7 +381,9 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 		return err
 	}
 
-	s.Env = envLib.Join(env, parsedEnv)
+	if len(s.Env) == 0 {
+		s.Env = envLib.Join(env, parsedEnv)
+	}
 
 	// LABEL VARIABLES
 	labels, err := parse.GetAllLabels(c.LabelFile, c.Label)
@@ -373,7 +395,9 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 		labels[systemdDefine.EnvVariable] = systemdUnit
 	}
 
-	s.Labels = labels
+	if len(s.Labels) == 0 {
+		s.Labels = labels
+	}
 
 	// ANNOTATIONS
 	annotations := make(map[string]string)
@@ -392,7 +416,9 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 		}
 		annotations[splitAnnotation[0]] = splitAnnotation[1]
 	}
-	s.Annotations = annotations
+	if len(s.Annotations) == 0 {
+		s.Annotations = annotations
+	}
 
 	if len(c.StorageOpts) > 0 {
 		opts := make(map[string]string, len(c.StorageOpts))
@@ -405,21 +431,23 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 		}
 		s.StorageOpts = opts
 	}
-	s.WorkDir = c.Workdir
+	if len(s.WorkDir) == 0 {
+		s.WorkDir = c.Workdir
+	}
 	if c.Entrypoint != nil {
 		entrypoint := []string{}
-		if ep := *c.Entrypoint; len(ep) > 0 {
-			// Check if entrypoint specified is json
-			if err := json.Unmarshal([]byte(*c.Entrypoint), &entrypoint); err != nil {
-				entrypoint = append(entrypoint, ep)
-			}
+		// Check if entrypoint specified is json
+		if err := json.Unmarshal([]byte(*c.Entrypoint), &entrypoint); err != nil {
+			entrypoint = append(entrypoint, *c.Entrypoint)
 		}
 		s.Entrypoint = entrypoint
 	}
 
 	// Include the command used to create the container.
 
-	s.ContainerCreateCommand = os.Args
+	if len(s.ContainerCreateCommand) == 0 {
+		s.ContainerCreateCommand = os.Args
+	}
 
 	if len(inputCommand) > 0 {
 		s.Command = inputCommand
@@ -427,27 +455,16 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 
 	// SHM Size
 	if c.ShmSize != "" {
-		shmSize, err := units.FromHumanSize(c.ShmSize)
-		if err != nil {
+		var m opts.MemBytes
+		if err := m.Set(c.ShmSize); err != nil {
 			return errors.Wrapf(err, "unable to translate --shm-size")
 		}
-		s.ShmSize = &shmSize
+		val := m.Value()
+		s.ShmSize = &val
 	}
 
 	if c.Net != nil {
-		s.CNINetworks = c.Net.CNINetworks
-	}
-
-	// Network aliases
-	if c.Net != nil {
-		if len(c.Net.Aliases) > 0 {
-			// build a map of aliases where key=cniName
-			aliases := make(map[string][]string, len(s.CNINetworks))
-			for _, cniNetwork := range s.CNINetworks {
-				aliases[cniNetwork] = c.Net.Aliases
-			}
-			s.Aliases = aliases
-		}
+		s.Networks = c.Net.Networks
 	}
 
 	if c.Net != nil {
@@ -456,28 +473,40 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 		s.DNSServers = c.Net.DNSServers
 		s.DNSSearch = c.Net.DNSSearch
 		s.DNSOptions = c.Net.DNSOptions
-		s.StaticIP = c.Net.StaticIP
-		s.StaticMAC = c.Net.StaticMAC
 		s.NetworkOptions = c.Net.NetworkOptions
 		s.UseImageHosts = c.Net.NoHosts
 	}
-	s.ImageVolumeMode = c.ImageVolume
+	if len(s.HostUsers) == 0 || len(c.HostUsers) != 0 {
+		s.HostUsers = c.HostUsers
+	}
+	if len(s.ImageVolumeMode) == 0 || len(c.ImageVolume) != 0 {
+		s.ImageVolumeMode = c.ImageVolume
+	}
 	if s.ImageVolumeMode == "bind" {
 		s.ImageVolumeMode = "anonymous"
 	}
 
-	s.Systemd = strings.ToLower(c.Systemd)
-	s.SdNotifyMode = c.SdNotifyMode
+	if len(s.Systemd) == 0 || len(c.Systemd) != 0 {
+		s.Systemd = strings.ToLower(c.Systemd)
+	}
+	if len(s.SdNotifyMode) == 0 || len(c.SdNotifyMode) != 0 {
+		s.SdNotifyMode = c.SdNotifyMode
+	}
 	if s.ResourceLimits == nil {
 		s.ResourceLimits = &specs.LinuxResources{}
 	}
-	s.ResourceLimits.Memory, err = getMemoryLimits(s, c)
-	if err != nil {
-		return err
+
+	if s.ResourceLimits.Memory == nil || (len(c.Memory) != 0 || len(c.MemoryReservation) != 0 || len(c.MemorySwap) != 0 || c.MemorySwappiness != 0) {
+		s.ResourceLimits.Memory, err = getMemoryLimits(c)
+		if err != nil {
+			return err
+		}
 	}
-	s.ResourceLimits.BlockIO, err = getIOLimits(s, c)
-	if err != nil {
-		return err
+	if s.ResourceLimits.BlockIO == nil || (len(c.BlkIOWeight) != 0 || len(c.BlkIOWeightDevice) != 0) {
+		s.ResourceLimits.BlockIO, err = getIOLimits(s, c)
+		if err != nil {
+			return err
+		}
 	}
 	if c.PIDsLimit != nil {
 		pids := specs.LinuxPids{
@@ -486,7 +515,10 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 
 		s.ResourceLimits.Pids = &pids
 	}
-	s.ResourceLimits.CPU = getCPULimits(c)
+
+	if s.ResourceLimits.CPU == nil || (c.CPUPeriod != 0 || c.CPUQuota != 0 || c.CPURTPeriod != 0 || c.CPURTRuntime != 0 || c.CPUS != 0 || len(c.CPUSetCPUs) != 0 || len(c.CPUSetMems) != 0 || c.CPUShares != 0) {
+		s.ResourceLimits.CPU = getCPULimits(c)
+	}
 
 	unifieds := make(map[string]string)
 	for _, unified := range c.CgroupConf {
@@ -511,11 +543,28 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 	if ld := c.LogDriver; len(ld) > 0 {
 		s.LogConfiguration.Driver = ld
 	}
-	s.CgroupParent = c.CGroupParent
-	s.CgroupsMode = c.CGroupsMode
-	s.Groups = c.GroupAdd
+	if len(s.CgroupParent) == 0 || len(c.CgroupParent) != 0 {
+		s.CgroupParent = c.CgroupParent
+	}
+	if len(s.CgroupsMode) == 0 {
+		s.CgroupsMode = c.CgroupsMode
+	}
+	if s.CgroupsMode == "" {
+		rtc, err := config.Default()
+		if err != nil {
+			return err
+		}
 
-	s.Hostname = c.Hostname
+		s.CgroupsMode = rtc.Cgroups()
+	}
+
+	if len(s.Groups) == 0 || len(c.GroupAdd) != 0 {
+		s.Groups = c.GroupAdd
+	}
+
+	if len(s.Hostname) == 0 || len(c.Hostname) != 0 {
+		s.Hostname = c.Hostname
+	}
 	sysctl := map[string]string{}
 	if ctl := c.Sysctl; len(ctl) > 0 {
 		sysctl, err = util.ValidateSysctls(ctl)
@@ -523,15 +572,29 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 			return err
 		}
 	}
-	s.Sysctl = sysctl
+	if len(s.Sysctl) == 0 || len(c.Sysctl) != 0 {
+		s.Sysctl = sysctl
+	}
 
-	s.CapAdd = c.CapAdd
-	s.CapDrop = c.CapDrop
-	s.Privileged = c.Privileged
-	s.ReadOnlyFilesystem = c.ReadOnly
-	s.ConmonPidFile = c.ConmonPIDFile
+	if len(s.CapAdd) == 0 || len(c.CapAdd) != 0 {
+		s.CapAdd = c.CapAdd
+	}
+	if len(s.CapDrop) == 0 || len(c.CapDrop) != 0 {
+		s.CapDrop = c.CapDrop
+	}
+	if !s.Privileged {
+		s.Privileged = c.Privileged
+	}
+	if !s.ReadOnlyFilesystem {
+		s.ReadOnlyFilesystem = c.ReadOnly
+	}
+	if len(s.ConmonPidFile) == 0 || len(c.ConmonPIDFile) != 0 {
+		s.ConmonPidFile = c.ConmonPIDFile
+	}
 
-	s.DependencyContainers = c.Requires
+	if len(s.DependencyContainers) == 0 || len(c.Requires) != 0 {
+		s.DependencyContainers = c.Requires
+	}
 
 	// TODO
 	// outside of specgen and oci though
@@ -547,7 +610,9 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 		}
 		sysmap[splitCtl[0]] = splitCtl[1]
 	}
-	s.Sysctl = sysmap
+	if len(s.Sysctl) == 0 || len(c.Sysctl) != 0 {
+		s.Sysctl = sysmap
+	}
 
 	if c.CIDFile != "" {
 		s.Annotations[define.InspectAnnotationCIDFile] = c.CIDFile
@@ -591,9 +656,13 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 		}
 	}
 
-	s.SeccompPolicy = c.SeccompPolicy
+	if len(s.SeccompPolicy) == 0 || len(c.SeccompPolicy) != 0 {
+		s.SeccompPolicy = c.SeccompPolicy
+	}
 
-	s.VolumesFrom = c.VolumesFrom
+	if len(s.VolumesFrom) == 0 || len(c.VolumesFrom) != 0 {
+		s.VolumesFrom = c.VolumesFrom
+	}
 
 	// Only add read-only tmpfs mounts in case that we are read-only and the
 	// read-only tmpfs flag has been set.
@@ -601,26 +670,41 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 	if err != nil {
 		return err
 	}
-	s.Mounts = mounts
-	s.Volumes = volumes
-	s.OverlayVolumes = overlayVolumes
-	s.ImageVolumes = imageVolumes
+	if len(s.Mounts) == 0 || len(c.Mount) != 0 {
+		s.Mounts = mounts
+	}
+	if len(s.Volumes) == 0 || len(c.Volume) != 0 {
+		s.Volumes = volumes
+	}
+	// TODO make sure these work in clone
+	if len(s.OverlayVolumes) == 0 {
+		s.OverlayVolumes = overlayVolumes
+	}
+	if len(s.ImageVolumes) == 0 {
+		s.ImageVolumes = imageVolumes
+	}
 
 	for _, dev := range c.Devices {
 		s.Devices = append(s.Devices, specs.LinuxDevice{Path: dev})
 	}
 
-	for _, rule := range c.DeviceCGroupRule {
+	for _, rule := range c.DeviceCgroupRule {
 		dev, err := parseLinuxResourcesDeviceAccess(rule)
 		if err != nil {
 			return err
 		}
-		s.DeviceCGroupRule = append(s.DeviceCGroupRule, dev)
+		s.DeviceCgroupRule = append(s.DeviceCgroupRule, dev)
 	}
 
-	s.Init = c.Init
-	s.InitPath = c.InitPath
-	s.Stdin = c.Interactive
+	if !s.Init {
+		s.Init = c.Init
+	}
+	if len(s.InitPath) == 0 || len(c.InitPath) != 0 {
+		s.InitPath = c.InitPath
+	}
+	if !s.Stdin {
+		s.Stdin = c.Interactive
+	}
 	// quiet
 	// DeviceCgroupRules: c.StringSlice("device-cgroup-rule"),
 
@@ -663,11 +747,19 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 			logOpts[split[0]] = split[1]
 		}
 	}
-	s.LogConfiguration.Options = logOpts
-	s.Name = c.Name
-	s.PreserveFDs = c.PreserveFDs
+	if len(s.LogConfiguration.Options) == 0 || len(c.LogOptions) != 0 {
+		s.LogConfiguration.Options = logOpts
+	}
+	if len(s.Name) == 0 || len(c.Name) != 0 {
+		s.Name = c.Name
+	}
+	if s.PreserveFDs == 0 || c.PreserveFDs != 0 {
+		s.PreserveFDs = c.PreserveFDs
+	}
 
-	s.OOMScoreAdj = &c.OOMScoreAdj
+	if s.OOMScoreAdj == nil || c.OOMScoreAdj != nil {
+		s.OOMScoreAdj = c.OOMScoreAdj
+	}
 	if c.Restart != "" {
 		splitRestart := strings.Split(c.Restart, ":")
 		switch len(splitRestart) {
@@ -692,9 +784,11 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 		s.RestartPolicy = splitRestart[0]
 	}
 
-	s.Secrets, s.EnvSecrets, err = parseSecrets(c.Secrets)
-	if err != nil {
-		return err
+	if len(s.Secrets) == 0 || len(c.Secrets) != 0 {
+		s.Secrets, s.EnvSecrets, err = parseSecrets(c.Secrets)
+		if err != nil {
+			return err
+		}
 	}
 
 	if c.Personality != "" {
@@ -702,16 +796,51 @@ func FillOutSpecGen(s *specgen.SpecGenerator, c *entities.ContainerCreateOptions
 		s.Personality.Domain = specs.LinuxPersonalityDomain(c.Personality)
 	}
 
-	s.Remove = c.Rm
-	s.StopTimeout = &c.StopTimeout
-	s.Timeout = c.Timeout
-	s.Timezone = c.Timezone
-	s.Umask = c.Umask
-	s.PidFile = c.PidFile
-	s.Volatile = c.Rm
+	if !s.Remove {
+		s.Remove = c.Rm
+	}
+	if s.StopTimeout == nil || c.StopTimeout != 0 {
+		s.StopTimeout = &c.StopTimeout
+	}
+	if s.Timeout == 0 || c.Timeout != 0 {
+		s.Timeout = c.Timeout
+	}
+	if len(s.Timezone) == 0 || len(c.Timezone) != 0 {
+		s.Timezone = c.Timezone
+	}
+	if len(s.Umask) == 0 || len(c.Umask) != 0 {
+		s.Umask = c.Umask
+	}
+	if len(s.PidFile) == 0 || len(c.PidFile) != 0 {
+		s.PidFile = c.PidFile
+	}
+	if !s.Volatile {
+		s.Volatile = c.Rm
+	}
+	if len(s.UnsetEnv) == 0 || len(c.UnsetEnv) != 0 {
+		s.UnsetEnv = c.UnsetEnv
+	}
+	if !s.UnsetEnvAll {
+		s.UnsetEnvAll = c.UnsetEnvAll
+	}
+	if len(s.ChrootDirs) == 0 || len(c.ChrootDirs) != 0 {
+		s.ChrootDirs = c.ChrootDirs
+	}
 
 	// Initcontainers
-	s.InitContainerType = c.InitContainerType
+	if len(s.InitContainerType) == 0 || len(c.InitContainerType) != 0 {
+		s.InitContainerType = c.InitContainerType
+	}
+
+	t := true
+	if s.Passwd == nil {
+		s.Passwd = &t
+	}
+
+	if len(s.PasswdEntry) == 0 || len(c.PasswdEntry) != 0 {
+		s.PasswdEntry = c.PasswdEntry
+	}
+
 	return nil
 }
 
@@ -727,7 +856,8 @@ func makeHealthCheckFromCli(inCmd, interval string, retries uint, timeout, start
 	if len(cmdArr) == 0 {
 		return nil, errors.New("Must define a healthcheck command for all healthchecks")
 	}
-	concat := ""
+
+	var concat string
 	if cmdArr[0] == "CMD" || cmdArr[0] == "none" { // this is for compat, we are already split properly for most compat cases
 		cmdArr = strings.Fields(inCmd)
 	} else if cmdArr[0] != "CMD-SHELL" { // this is for podman side of things, won't contain the keywords
@@ -787,29 +917,30 @@ func makeHealthCheckFromCli(inCmd, interval string, retries uint, timeout, start
 	return &hc, nil
 }
 
-func parseWeightDevices(s *specgen.SpecGenerator, weightDevs []string) error {
+func parseWeightDevices(weightDevs []string) (map[string]specs.LinuxWeightDevice, error) {
+	wd := make(map[string]specs.LinuxWeightDevice)
 	for _, val := range weightDevs {
 		split := strings.SplitN(val, ":", 2)
 		if len(split) != 2 {
-			return fmt.Errorf("bad format: %s", val)
+			return nil, fmt.Errorf("bad format: %s", val)
 		}
 		if !strings.HasPrefix(split[0], "/dev/") {
-			return fmt.Errorf("bad format for device path: %s", val)
+			return nil, fmt.Errorf("bad format for device path: %s", val)
 		}
 		weight, err := strconv.ParseUint(split[1], 10, 0)
 		if err != nil {
-			return fmt.Errorf("invalid weight for device: %s", val)
+			return nil, fmt.Errorf("invalid weight for device: %s", val)
 		}
 		if weight > 0 && (weight < 10 || weight > 1000) {
-			return fmt.Errorf("invalid weight for device: %s", val)
+			return nil, fmt.Errorf("invalid weight for device: %s", val)
 		}
 		w := uint16(weight)
-		s.WeightDevice[split[0]] = specs.LinuxWeightDevice{
+		wd[split[0]] = specs.LinuxWeightDevice{
 			Weight:     &w,
 			LeafWeight: nil,
 		}
 	}
-	return nil
+	return wd, nil
 }
 
 func parseThrottleBPSDevices(bpsDevices []string) (map[string]specs.LinuxThrottleDevice, error) {
@@ -854,7 +985,7 @@ func parseThrottleIOPsDevices(iopsDevices []string) (map[string]specs.LinuxThrot
 }
 
 func parseSecrets(secrets []string) ([]specgen.Secret, map[string]string, error) {
-	secretParseError := errors.New("error parsing secret")
+	secretParseError := errors.New("parsing secret")
 	var mount []specgen.Secret
 	envs := make(map[string]string)
 	for _, val := range secrets {
@@ -872,6 +1003,7 @@ func parseSecrets(secrets []string) ([]specgen.Secret, map[string]string, error)
 		if len(split) == 1 {
 			mountSecret := specgen.Secret{
 				Source: val,
+				Target: target,
 				UID:    uid,
 				GID:    gid,
 				Mode:   mode,
@@ -895,7 +1027,7 @@ func parseSecrets(secrets []string) ([]specgen.Secret, map[string]string, error)
 				source = kv[1]
 			case "type":
 				if secretType != "" {
-					return nil, nil, errors.Wrap(secretParseError, "cannot set more tha one secret type")
+					return nil, nil, errors.Wrap(secretParseError, "cannot set more than one secret type")
 				}
 				if kv[1] != "mount" && kv[1] != "env" {
 					return nil, nil, errors.Wrapf(secretParseError, "type %s is invalid", kv[1])
@@ -937,11 +1069,9 @@ func parseSecrets(secrets []string) ([]specgen.Secret, map[string]string, error)
 			return nil, nil, errors.Wrapf(secretParseError, "no source found %s", val)
 		}
 		if secretType == "mount" {
-			if target != "" {
-				return nil, nil, errors.Wrapf(secretParseError, "target option is invalid for mounted secrets")
-			}
 			mountSecret := specgen.Secret{
 				Source: source,
+				Target: target,
 				UID:    uid,
 				GID:    gid,
 				Mode:   mode,
@@ -968,9 +1098,9 @@ var cgroupDeviceType = map[string]bool{
 }
 
 var cgroupDeviceAccess = map[string]bool{
-	"r": true, //read
-	"w": true, //write
-	"m": true, //mknod
+	"r": true, // read
+	"w": true, // write
+	"m": true, // mknod
 }
 
 // parseLinuxResourcesDeviceAccess parses the raw string passed with the --device-access-add flag

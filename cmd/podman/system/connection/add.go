@@ -12,10 +12,10 @@ import (
 
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/cmd/podman/system"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/terminal"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/cmd/podman/system"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/terminal"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -112,7 +112,7 @@ func add(cmd *cobra.Command, args []string) error {
 			iden = cOpts.Identity
 		}
 		if uri.Path == "" || uri.Path == "/" {
-			if uri.Path, err = getUDS(cmd, uri, iden); err != nil {
+			if uri.Path, err = getUDS(uri, iden); err != nil {
 				return err
 			}
 		}
@@ -204,7 +204,7 @@ func GetUserInfo(uri *url.URL) (*url.Userinfo, error) {
 	return url.User(usr.Username), nil
 }
 
-func getUDS(cmd *cobra.Command, uri *url.URL, iden string) (string, error) {
+func getUDS(uri *url.URL, iden string) (string, error) {
 	cfg, err := ValidateAndConfigure(uri, iden)
 	if err != nil {
 		return "", errors.Wrapf(err, "failed to validate")
@@ -226,12 +226,7 @@ func getUDS(cmd *cobra.Command, uri *url.URL, iden string) (string, error) {
 	if v, found := os.LookupEnv("PODMAN_BINARY"); found {
 		podman = v
 	}
-	run := podman + " info --format=json"
-	out, err := ExecRemoteCommand(dial, run)
-	if err != nil {
-		return "", err
-	}
-	infoJSON, err := json.Marshal(out)
+	infoJSON, err := ExecRemoteCommand(dial, podman+" info --format=json")
 	if err != nil {
 		return "", err
 	}
@@ -249,7 +244,7 @@ func getUDS(cmd *cobra.Command, uri *url.URL, iden string) (string, error) {
 
 // ValidateAndConfigure will take a ssh url and an identity key (rsa and the like) and ensure the information given is valid
 // iden iden can be blank to mean no identity key
-// once the function validates the information it creates and returns an ssh.ClientConfig
+// once the function validates the information it creates and returns an ssh.ClientConfig.
 func ValidateAndConfigure(uri *url.URL, iden string) (*ssh.ClientConfig, error) {
 	var signers []ssh.Signer
 	passwd, passwdSet := uri.User.Password()

@@ -9,9 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	. "github.com/containers/podman/v3/test/utils"
+	. "github.com/containers/podman/v4/test/utils"
 	. "github.com/onsi/ginkgo"
-	"github.com/onsi/ginkgo/config"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
 )
@@ -24,7 +23,6 @@ var _ = Describe("Podman login and logout", func() {
 		authPath                 string
 		certPath                 string
 		certDirPath              string
-		port                     int
 		server                   string
 		testImg                  string
 		registriesConfWithSearch []byte
@@ -38,7 +36,8 @@ var _ = Describe("Podman login and logout", func() {
 		podmanTest = PodmanTestCreate(tempdir)
 
 		authPath = filepath.Join(podmanTest.TempDir, "auth")
-		os.Mkdir(authPath, os.ModePerm)
+		err := os.Mkdir(authPath, os.ModePerm)
+		Expect(err).ToNot(HaveOccurred())
 
 		if IsCommandAvailable("getenforce") {
 			ge := SystemExec("getenforce", []string{})
@@ -57,12 +56,15 @@ var _ = Describe("Podman login and logout", func() {
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
 
-		f, _ := os.Create(filepath.Join(authPath, "htpasswd"))
+		f, err := os.Create(filepath.Join(authPath, "htpasswd"))
+		Expect(err).ToNot(HaveOccurred())
 		defer f.Close()
 
-		f.WriteString(session.OutputToString())
-		f.Sync()
-		port = 4999 + config.GinkgoConfig.ParallelNode
+		_, err = f.WriteString(session.OutputToString())
+		Expect(err).ToNot(HaveOccurred())
+		err = f.Sync()
+		Expect(err).ToNot(HaveOccurred())
+		port := GetPort()
 		server = strings.Join([]string{"localhost", strconv.Itoa(port)}, ":")
 
 		registriesConfWithSearch = []byte(fmt.Sprintf("[registries.search]\nregistries = ['%s']", server))
@@ -70,7 +72,8 @@ var _ = Describe("Podman login and logout", func() {
 		testImg = strings.Join([]string{server, "test-alpine"}, "/")
 
 		certDirPath = filepath.Join(os.Getenv("HOME"), ".config/containers/certs.d", server)
-		os.MkdirAll(certDirPath, os.ModePerm)
+		err = os.MkdirAll(certDirPath, os.ModePerm)
+		Expect(err).ToNot(HaveOccurred())
 		cwd, _ := os.Getwd()
 		certPath = filepath.Join(cwd, "../", "certs")
 
@@ -190,6 +193,8 @@ var _ = Describe("Podman login and logout", func() {
 		Expect(session).To(ExitWithError())
 
 		session = podmanTest.Podman([]string{"logout", "--authfile", authFile, server})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
 	})
 
 	It("podman login and logout with --tls-verify", func() {
@@ -207,7 +212,8 @@ var _ = Describe("Podman login and logout", func() {
 	})
 	It("podman login and logout with --cert-dir", func() {
 		certDir := filepath.Join(podmanTest.TempDir, "certs")
-		os.MkdirAll(certDir, os.ModePerm)
+		err := os.MkdirAll(certDir, os.ModePerm)
+		Expect(err).ToNot(HaveOccurred())
 
 		setup := SystemExec("cp", []string{filepath.Join(certPath, "domain.crt"), filepath.Join(certDir, "ca.crt")})
 		setup.WaitWithDefaultTimeout()
@@ -226,7 +232,8 @@ var _ = Describe("Podman login and logout", func() {
 	})
 	It("podman login and logout with multi registry", func() {
 		certDir := filepath.Join(os.Getenv("HOME"), ".config/containers/certs.d", "localhost:9001")
-		os.MkdirAll(certDir, os.ModePerm)
+		err = os.MkdirAll(certDir, os.ModePerm)
+		Expect(err).ToNot(HaveOccurred())
 
 		cwd, _ := os.Getwd()
 		certPath = filepath.Join(cwd, "../", "certs")
@@ -419,12 +426,12 @@ var _ = Describe("Podman login and logout", func() {
 		Expect(authInfo).NotTo(HaveKey(testRepos[1]))
 	})
 
-	It("podman login with repository invalid arguments", func() {
+	It("podman login with http{s} prefix", func() {
 		authFile := filepath.Join(podmanTest.TempDir, "auth.json")
 
 		for _, invalidArg := range []string{
 			"https://" + server + "/podmantest",
-			server + "/podmantest/image:latest",
+			"http://" + server + "/podmantest/image:latest",
 		} {
 			session := podmanTest.Podman([]string{
 				"login",
@@ -434,7 +441,7 @@ var _ = Describe("Podman login and logout", func() {
 				invalidArg,
 			})
 			session.WaitWithDefaultTimeout()
-			Expect(session).Should(ExitWithError())
+			Expect(session).To(Exit(0))
 		}
 	})
 

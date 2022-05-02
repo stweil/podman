@@ -1,3 +1,4 @@
+//go:build linux && !remote
 // +build linux,!remote
 
 package system
@@ -10,12 +11,12 @@ import (
 	"time"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/rootless"
-	"github.com/containers/podman/v3/pkg/systemd"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v4/pkg/systemd"
+	"github.com/containers/podman/v4/pkg/util"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -66,7 +67,7 @@ func init() {
 
 	flags.StringVarP(&srvArgs.PProfAddr, "pprof-address", "", "",
 		"Binding network address for pprof profile endpoints, default: do not expose endpoints")
-	flags.MarkHidden("pprof-address")
+	_ = flags.MarkHidden("pprof-address")
 }
 
 func aliasTimeoutFlag(_ *pflag.FlagSet, name string) pflag.NormalizedName {

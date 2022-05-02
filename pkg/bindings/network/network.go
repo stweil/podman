@@ -3,12 +3,11 @@ package network
 import (
 	"context"
 	"net/http"
-	"net/url"
 	"strings"
 
-	"github.com/containers/podman/v3/libpod/network/types"
-	"github.com/containers/podman/v3/pkg/bindings"
-	"github.com/containers/podman/v3/pkg/domain/entities"
+	"github.com/containers/common/libnetwork/types"
+	"github.com/containers/podman/v4/pkg/bindings"
+	"github.com/containers/podman/v4/pkg/domain/entities"
 	jsoniter "github.com/json-iterator/go"
 )
 
@@ -28,7 +27,7 @@ func Create(ctx context.Context, network *types.Network) (types.Network, error) 
 		return report, err
 	}
 	reader := strings.NewReader(networkConfig)
-	response, err := conn.DoRequest(reader, http.MethodPost, "/networks/create", nil, nil)
+	response, err := conn.DoRequest(ctx, reader, http.MethodPost, "/networks/create", nil, nil)
 	if err != nil {
 		return report, err
 	}
@@ -44,7 +43,7 @@ func Inspect(ctx context.Context, nameOrID string, _ *InspectOptions) (types.Net
 	if err != nil {
 		return net, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodGet, "/networks/%s/json", nil, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/networks/%s/json", nil, nil, nameOrID)
 	if err != nil {
 		return net, err
 	}
@@ -69,7 +68,7 @@ func Remove(ctx context.Context, nameOrID string, options *RemoveOptions) ([]*en
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodDelete, "/networks/%s", params, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodDelete, "/networks/%s", params, nil, nameOrID)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +91,7 @@ func List(ctx context.Context, options *ListOptions) ([]types.Network, error) {
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodGet, "/networks/json", params, nil)
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/networks/json", params, nil)
 	if err != nil {
 		return netList, err
 	}
@@ -102,7 +101,7 @@ func List(ctx context.Context, options *ListOptions) ([]types.Network, error) {
 }
 
 // Disconnect removes a container from a given network
-func Disconnect(ctx context.Context, networkName string, ContainerNameOrID string, options *DisconnectOptions) error {
+func Disconnect(ctx context.Context, networkName string, containerNameOrID string, options *DisconnectOptions) error {
 	if options == nil {
 		options = new(DisconnectOptions)
 	}
@@ -110,14 +109,12 @@ func Disconnect(ctx context.Context, networkName string, ContainerNameOrID strin
 	if err != nil {
 		return err
 	}
-	// No params are used for disconnect
-	params := url.Values{}
 	// Disconnect sends everything in body
 	disconnect := struct {
 		Container string
 		Force     bool
 	}{
-		Container: ContainerNameOrID,
+		Container: containerNameOrID,
 	}
 	if force := options.GetForce(); options.Changed("Force") {
 		disconnect.Force = force
@@ -128,7 +125,7 @@ func Disconnect(ctx context.Context, networkName string, ContainerNameOrID strin
 		return err
 	}
 	stringReader := strings.NewReader(body)
-	response, err := conn.DoRequest(stringReader, http.MethodPost, "/networks/%s/disconnect", params, nil, networkName)
+	response, err := conn.DoRequest(ctx, stringReader, http.MethodPost, "/networks/%s/disconnect", nil, nil, networkName)
 	if err != nil {
 		return err
 	}
@@ -138,32 +135,26 @@ func Disconnect(ctx context.Context, networkName string, ContainerNameOrID strin
 }
 
 // Connect adds a container to a network
-func Connect(ctx context.Context, networkName string, ContainerNameOrID string, options *ConnectOptions) error {
+func Connect(ctx context.Context, networkName string, containerNameOrID string, options *types.PerNetworkOptions) error {
 	if options == nil {
-		options = new(ConnectOptions)
+		options = new(types.PerNetworkOptions)
 	}
 	conn, err := bindings.GetClient(ctx)
 	if err != nil {
 		return err
 	}
-	// No params are used in connect
-	params := url.Values{}
 	// Connect sends everything in body
-	connect := struct {
-		Container string
-		Aliases   []string
-	}{
-		Container: ContainerNameOrID,
+	connect := entities.NetworkConnectOptions{
+		Container:         containerNameOrID,
+		PerNetworkOptions: *options,
 	}
-	if aliases := options.GetAliases(); options.Changed("Aliases") {
-		connect.Aliases = aliases
-	}
+
 	body, err := jsoniter.MarshalToString(connect)
 	if err != nil {
 		return err
 	}
 	stringReader := strings.NewReader(body)
-	response, err := conn.DoRequest(stringReader, http.MethodPost, "/networks/%s/connect", params, nil, networkName)
+	response, err := conn.DoRequest(ctx, stringReader, http.MethodPost, "/networks/%s/connect", nil, nil, networkName)
 	if err != nil {
 		return err
 	}
@@ -178,7 +169,7 @@ func Exists(ctx context.Context, nameOrID string, options *ExistsOptions) (bool,
 	if err != nil {
 		return false, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodGet, "/networks/%s/exists", nil, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/networks/%s/exists", nil, nil, nameOrID)
 	if err != nil {
 		return false, err
 	}
@@ -204,7 +195,7 @@ func Prune(ctx context.Context, options *PruneOptions) ([]*entities.NetworkPrune
 		return nil, err
 	}
 
-	response, err := conn.DoRequest(nil, http.MethodPost, "/networks/prune", params, nil)
+	response, err := conn.DoRequest(ctx, nil, http.MethodPost, "/networks/prune", params, nil)
 	if err != nil {
 		return nil, err
 	}

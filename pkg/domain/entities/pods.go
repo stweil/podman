@@ -5,9 +5,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/specgen"
-	"github.com/containers/podman/v3/pkg/util"
+	commonFlag "github.com/containers/common/pkg/flag"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v4/pkg/util"
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -117,7 +118,7 @@ type PodSpec struct {
 // The JSON tags below are made to match the respective field in ContainerCreateOptions for the purpose of mapping.
 // swagger:model PodCreateOptions
 type PodCreateOptions struct {
-	CGroupParent       string            `json:"cgroup_parent,omitempty"`
+	CgroupParent       string            `json:"cgroup_parent,omitempty"`
 	CreateCommand      []string          `json:"create_command,omitempty"`
 	Devices            []string          `json:"devices,omitempty"`
 	DeviceReadBPs      []string          `json:"device_read_bps,omitempty"`
@@ -131,12 +132,15 @@ type PodCreateOptions struct {
 	Name               string            `json:"name,omitempty"`
 	Net                *NetOptions       `json:"net,omitempty"`
 	Share              []string          `json:"share,omitempty"`
+	ShareParent        *bool             `json:"share_parent,omitempty"`
 	Pid                string            `json:"pid,omitempty"`
 	Cpus               float64           `json:"cpus,omitempty"`
 	CpusetCpus         string            `json:"cpuset_cpus,omitempty"`
 	Userns             specgen.Namespace `json:"-"`
 	Volume             []string          `json:"volume,omitempty"`
 	VolumesFrom        []string          `json:"volumes_from,omitempty"`
+	SecurityOpt        []string          `json:"security_opt,omitempty"`
+	Sysctl             []string          `json:"sysctl,omitempty"`
 }
 
 // PodLogsOptions describes the options to extract pod logs.
@@ -145,6 +149,8 @@ type PodLogsOptions struct {
 	ContainerLogsOptions
 	// If specified will only fetch the logs of specified container
 	ContainerName string
+	// Show different colors in the logs.
+	Color bool
 }
 
 type ContainerCreateOptions struct {
@@ -156,8 +162,8 @@ type ContainerCreateOptions struct {
 	CapAdd            []string
 	CapDrop           []string
 	CgroupNS          string
-	CGroupsMode       string
-	CGroupParent      string `json:"cgroup_parent,omitempty"`
+	CgroupsMode       string
+	CgroupParent      string `json:"cgroup_parent,omitempty"`
 	CIDFile           string
 	ConmonPIDFile     string `json:"container_conmon_pidfile,omitempty"`
 	CPUPeriod         uint64
@@ -169,7 +175,7 @@ type ContainerCreateOptions struct {
 	CPUSetCPUs        string  `json:"cpuset_cpus,omitempty"`
 	CPUSetMems        string
 	Devices           []string `json:"devices,omitempty"`
-	DeviceCGroupRule  []string
+	DeviceCgroupRule  []string
 	DeviceReadBPs     []string `json:"device_read_bps,omitempty"`
 	DeviceReadIOPs    []string
 	DeviceWriteBPs    []string
@@ -188,13 +194,13 @@ type ContainerCreateOptions struct {
 	HealthTimeout     string
 	Hostname          string `json:"hostname,omitempty"`
 	HTTPProxy         bool
+	HostUsers         []string
 	ImageVolume       string
 	Init              bool
 	InitContainerType string
 	InitPath          string
 	Interactive       bool
 	IPC               string
-	KernelMemory      string
 	Label             []string
 	LabelFile         []string
 	LogDriver         string
@@ -206,7 +212,7 @@ type ContainerCreateOptions struct {
 	Name              string `json:"container_name"`
 	NoHealthCheck     bool
 	OOMKillDisable    bool
-	OOMScoreAdj       int
+	OOMScoreAdj       *int
 	Arch              string
 	OS                string
 	Variant           string
@@ -229,7 +235,7 @@ type ContainerCreateOptions struct {
 	Rm                bool
 	RootFS            bool
 	Secrets           []string
-	SecurityOpt       []string
+	SecurityOpt       []string `json:"security_opt,omitempty"`
 	SdNotifyMode      string
 	ShmSize           string
 	SignaturePolicy   string
@@ -238,14 +244,16 @@ type ContainerCreateOptions struct {
 	StorageOpts       []string
 	SubUIDName        string
 	SubGIDName        string
-	Sysctl            []string
+	Sysctl            []string `json:"sysctl,omitempty"`
 	Systemd           string
 	Timeout           uint
-	TLSVerify         bool
+	TLSVerify         commonFlag.OptionalBool
 	TmpFS             []string
 	TTY               bool
 	Timezone          string
 	Umask             string
+	UnsetEnv          []string
+	UnsetEnvAll       bool
 	UIDMap            []string
 	Ulimit            []string
 	User              string
@@ -257,11 +265,24 @@ type ContainerCreateOptions struct {
 	Workdir           string
 	SeccompPolicy     string
 	PidFile           string
+	ChrootDirs        []string
 	IsInfra           bool
+	IsClone           bool
 
 	Net *NetOptions `json:"net,omitempty"`
 
 	CgroupConf []string
+
+	PasswdEntry string
+}
+
+func NewInfraContainerCreateOptions() ContainerCreateOptions {
+	options := ContainerCreateOptions{
+		IsInfra:          true,
+		ImageVolume:      "bind",
+		MemorySwappiness: -1,
+	}
+	return options
 }
 
 type PodCreateReport struct {
@@ -300,6 +321,7 @@ func ToPodSpecGen(s specgen.PodSpecGenerator, p *PodCreateOptions) (*specgen.Pod
 	s.Hostname = p.Hostname
 	s.Labels = p.Labels
 	s.Devices = p.Devices
+	s.SecurityOpt = p.SecurityOpt
 	s.NoInfra = !p.Infra
 	if p.InfraCommand != nil && len(*p.InfraCommand) > 0 {
 		s.InfraCommand = strings.Split(*p.InfraCommand, " ")
@@ -309,6 +331,7 @@ func ToPodSpecGen(s specgen.PodSpecGenerator, p *PodCreateOptions) (*specgen.Pod
 	}
 	s.InfraImage = p.InfraImage
 	s.SharedNamespaces = p.Share
+	s.ShareParent = p.ShareParent
 	s.PodCreateCommand = p.CreateCommand
 	s.VolumesFrom = p.VolumesFrom
 
@@ -316,10 +339,8 @@ func ToPodSpecGen(s specgen.PodSpecGenerator, p *PodCreateOptions) (*specgen.Pod
 
 	if p.Net != nil {
 		s.NetNS = p.Net.Network
-		s.StaticIP = p.Net.StaticIP
-		s.StaticMAC = p.Net.StaticMAC
 		s.PortMappings = p.Net.PublishPorts
-		s.CNINetworks = p.Net.CNINetworks
+		s.Networks = p.Net.Networks
 		s.NetworkOptions = p.Net.NetworkOptions
 		if p.Net.UseImageResolvConf {
 			s.NoManageResolvConf = true
@@ -332,7 +353,7 @@ func ToPodSpecGen(s specgen.PodSpecGenerator, p *PodCreateOptions) (*specgen.Pod
 	}
 
 	// Cgroup
-	s.CgroupParent = p.CGroupParent
+	s.CgroupParent = p.CgroupParent
 
 	// Resource config
 	cpuDat := p.CPULimits()
@@ -348,6 +369,15 @@ func ToPodSpecGen(s specgen.PodSpecGenerator, p *PodCreateOptions) (*specgen.Pod
 		}
 	}
 	s.Userns = p.Userns
+	sysctl := map[string]string{}
+	if ctl := p.Sysctl; len(ctl) > 0 {
+		sysctl, err = util.ValidateSysctls(ctl)
+		if err != nil {
+			return nil, err
+		}
+	}
+	s.Sysctl = sysctl
+
 	return &s, nil
 }
 
@@ -456,6 +486,7 @@ func PodLogsOptionsToContainerLogsOptions(options PodLogsOptions) ContainerLogsO
 		Until:        options.Until,
 		Tail:         options.Tail,
 		Timestamps:   options.Timestamps,
+		Colors:       options.Colors,
 		StdoutWriter: options.StdoutWriter,
 		StderrWriter: options.StderrWriter,
 	}

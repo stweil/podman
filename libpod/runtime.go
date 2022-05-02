@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -19,23 +18,23 @@ import (
 
 	"github.com/containers/buildah/pkg/parse"
 	"github.com/containers/common/libimage"
+	"github.com/containers/common/libnetwork/network"
+	nettypes "github.com/containers/common/libnetwork/types"
+	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/common/pkg/secrets"
 	"github.com/containers/image/v5/pkg/sysregistriesv2"
 	is "github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/libpod/events"
-	"github.com/containers/podman/v3/libpod/lock"
-	"github.com/containers/podman/v3/libpod/network/cni"
-	nettypes "github.com/containers/podman/v3/libpod/network/types"
-	"github.com/containers/podman/v3/libpod/plugin"
-	"github.com/containers/podman/v3/libpod/shutdown"
-	"github.com/containers/podman/v3/pkg/cgroups"
-	"github.com/containers/podman/v3/pkg/rootless"
-	"github.com/containers/podman/v3/pkg/systemd"
-	"github.com/containers/podman/v3/pkg/util"
-	"github.com/containers/podman/v3/utils"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/libpod/events"
+	"github.com/containers/podman/v4/libpod/lock"
+	"github.com/containers/podman/v4/libpod/plugin"
+	"github.com/containers/podman/v4/libpod/shutdown"
+	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v4/pkg/systemd"
+	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v4/utils"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/unshare"
 	"github.com/docker/docker/pkg/namesgenerator"
@@ -87,6 +86,11 @@ type Runtime struct {
 	libimageEventsShutdown chan bool
 	lockManager            lock.Manager
 
+	// syslog describes whenever logrus should log to the syslog as well.
+	// Note that the syslog hook will be enabled early in cmd/podman/syslog_linux.go
+	// This bool is just needed so that we can set it for netavark interface.
+	syslog bool
+
 	// doRenumber indicates that the runtime should perform a lock renumber
 	// during initialization.
 	// Once the runtime has been initialized and returned, this variable is
@@ -104,7 +108,6 @@ type Runtime struct {
 	// and remains true until the runtime is shut down (rendering its
 	// storage unusable). When valid is false, the runtime cannot be used.
 	valid bool
-	lock  sync.RWMutex
 
 	// mechanism to read and write even logs
 	eventer events.Eventer
@@ -164,8 +167,7 @@ func NewRuntime(ctx context.Context, options ...RuntimeOption) (*Runtime, error)
 	if err != nil {
 		return nil, err
 	}
-	conf.CheckCgroupsAndAdjustConfig()
-	return newRuntimeFromConfig(ctx, conf, options...)
+	return newRuntimeFromConfig(conf, options...)
 }
 
 // NewRuntimeFromConfig creates a new container runtime using the given
@@ -174,10 +176,10 @@ func NewRuntime(ctx context.Context, options ...RuntimeOption) (*Runtime, error)
 // An error will be returned if the configuration file at the given path does
 // not exist or cannot be loaded
 func NewRuntimeFromConfig(ctx context.Context, userConfig *config.Config, options ...RuntimeOption) (*Runtime, error) {
-	return newRuntimeFromConfig(ctx, userConfig, options...)
+	return newRuntimeFromConfig(userConfig, options...)
 }
 
-func newRuntimeFromConfig(ctx context.Context, conf *config.Config, options ...RuntimeOption) (*Runtime, error) {
+func newRuntimeFromConfig(conf *config.Config, options ...RuntimeOption) (*Runtime, error) {
 	runtime := new(Runtime)
 
 	if conf.Engine.OCIRuntime == "" {
@@ -208,6 +210,10 @@ func newRuntimeFromConfig(ctx context.Context, conf *config.Config, options ...R
 	}
 
 	if err := shutdown.Register("libpod", func(sig os.Signal) error {
+		// For `systemctl stop podman.service` support, exit code should be 0
+		if sig == syscall.SIGTERM {
+			os.Exit(0)
+		}
 		os.Exit(1)
 		return nil
 	}); err != nil && errors.Cause(err) != shutdown.ErrHandlerExists {
@@ -218,9 +224,11 @@ func newRuntimeFromConfig(ctx context.Context, conf *config.Config, options ...R
 		return nil, errors.Wrapf(err, "error starting shutdown signal handler")
 	}
 
-	if err := makeRuntime(ctx, runtime); err != nil {
+	if err := makeRuntime(runtime); err != nil {
 		return nil, err
 	}
+
+	runtime.config.CheckCgroupsAndAdjustConfig()
 
 	return runtime, nil
 }
@@ -284,7 +292,7 @@ func getLockManager(runtime *Runtime) (lock.Manager, error) {
 
 // Make a new runtime based on the given configuration
 // Sets up containers/storage, state store, OCI runtime
-func makeRuntime(ctx context.Context, runtime *Runtime) (retErr error) {
+func makeRuntime(runtime *Runtime) (retErr error) {
 	// Find a working conmon binary
 	cPath, err := findConmon(runtime.config.Engine.ConmonPath)
 	if err != nil {
@@ -483,19 +491,15 @@ func makeRuntime(ctx context.Context, runtime *Runtime) (retErr error) {
 		}
 	}
 
-	netInterface, err := cni.NewCNINetworkInterface(cni.InitConfig{
-		CNIConfigDir:   runtime.config.Network.NetworkConfigDir,
-		CNIPluginDirs:  runtime.config.Network.CNIPluginDirs,
-		DefaultNetwork: runtime.config.Network.DefaultNetwork,
-		DefaultSubnet:  runtime.config.Network.DefaultSubnet,
-		IsMachine:      runtime.config.Engine.MachineEnabled,
-		LockFile:       filepath.Join(runtime.config.Network.NetworkConfigDir, "cni.lock"),
-	})
-	if err != nil {
-		return errors.Wrapf(err, "could not create network interface")
+	// the store is only setup when we are in the userns so we do the same for the network interface
+	if !needsUserns {
+		netBackend, netInterface, err := network.NetworkBackend(runtime.store, runtime.config, runtime.syslog)
+		if err != nil {
+			return err
+		}
+		runtime.config.Network.NetworkBackend = string(netBackend)
+		runtime.network = netInterface
 	}
-
-	runtime.network = netInterface
 
 	// We now need to see if the system has restarted
 	// We check for the presence of a file in our tmp directory to verify this
@@ -543,7 +547,13 @@ func makeRuntime(ctx context.Context, runtime *Runtime) (retErr error) {
 				return err
 			}
 			if became {
+				// Check if the pause process was created.  If it was created, then
+				// move it to its own systemd scope.
 				utils.MovePauseProcessToScope(pausePid)
+
+				// gocritic complains because defer is not run on os.Exit()
+				// However this is fine because the lock is released anyway when the process exits
+				//nolint:gocritic
 				os.Exit(ret)
 			}
 		}
@@ -592,7 +602,7 @@ func makeRuntime(ctx context.Context, runtime *Runtime) (retErr error) {
 	runtime.valid = true
 
 	if runtime.doMigrate {
-		if err := runtime.migrate(ctx); err != nil {
+		if err := runtime.migrate(); err != nil {
 			return err
 		}
 	}
@@ -709,9 +719,6 @@ func (r *Runtime) TmpDir() (string, error) {
 // Note that the returned value is not a copy and must hence
 // only be used in a reading fashion.
 func (r *Runtime) GetConfigNoCopy() (*config.Config, error) {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
-
 	if !r.valid {
 		return nil, define.ErrRuntimeStopped
 	}
@@ -806,9 +813,6 @@ func (r *Runtime) DeferredShutdown(force bool) {
 // cleaning up; if force is false, an error will be returned if there are
 // still containers running or mounted
 func (r *Runtime) Shutdown(force bool) error {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-
 	if !r.valid {
 		return define.ErrRuntimeStopped
 	}
@@ -1012,9 +1016,6 @@ func (r *Runtime) RunRoot() string {
 // If the given ID does not correspond to any existing Pod or Container,
 // ErrNoSuchCtr is returned.
 func (r *Runtime) GetName(id string) (string, error) {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
-
 	if !r.valid {
 		return "", define.ErrRuntimeStopped
 	}
@@ -1075,7 +1076,9 @@ func (r *Runtime) mergeDBConfig(dbConfig *DBConfig) {
 			logrus.Debugf("Overriding tmp dir %q with %q from database", c.TmpDir, dbConfig.LibpodTmp)
 		}
 		c.TmpDir = dbConfig.LibpodTmp
-		c.EventsLogFilePath = filepath.Join(dbConfig.LibpodTmp, "events", "events.log")
+		if c.EventsLogFilePath == "" {
+			c.EventsLogFilePath = filepath.Join(dbConfig.LibpodTmp, "events", "events.log")
+		}
 	}
 
 	if !r.storageSet.VolumePathSet && dbConfig.VolumePath != "" {

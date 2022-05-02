@@ -3,10 +3,10 @@ package tunnel
 import (
 	"context"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/bindings/pods"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/bindings/pods"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/util"
 	"github.com/pkg/errors"
 )
 
@@ -42,14 +42,14 @@ func (ic *ContainerEngine) PodKill(ctx context.Context, namesOrIds []string, opt
 	return reports, nil
 }
 
-func (ic *ContainerEngine) PodLogs(_ context.Context, nameOrIDs string, options entities.PodLogsOptions) error {
+func (ic *ContainerEngine) PodLogs(ctx context.Context, nameOrIDs string, options entities.PodLogsOptions) error {
 	// PodLogsOptions are similar but contains few extra fields like ctrName
 	// So cast other values as is so we can re-use the code
 	containerLogsOpts := entities.PodLogsOptionsToContainerLogsOptions(options)
 
 	// interface only accepts slice, keep everything consistent
 	name := []string{options.ContainerName}
-	return ic.ContainerLogs(nil, name, containerLogsOpts)
+	return ic.ContainerLogs(ctx, name, containerLogsOpts)
 }
 
 func (ic *ContainerEngine) PodPause(ctx context.Context, namesOrIds []string, options entities.PodPauseOptions) ([]*entities.PodPauseReport, error) {

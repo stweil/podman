@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/containers/podman/v3/pkg/api/handlers/compat"
+	"github.com/containers/podman/v4/pkg/api/handlers/compat"
 	"github.com/gorilla/mux"
 )
 
@@ -169,7 +169,7 @@ func (s *APIServer) registerExecHandlers(r *mux.Router) error {
 	// - application/json
 	// responses:
 	//   200:
-	//     description: no error
+	//     $ref: "#/responses/InspectExecSession"
 	//   404:
 	//     $ref: "#/responses/NoSuchExecInstance"
 	//   500:

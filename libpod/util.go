@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/libpod/network/types"
-	"github.com/containers/podman/v3/utils"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/utils"
 	"github.com/fsnotify/fsnotify"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/selinux/go-selinux/label"
@@ -55,7 +55,11 @@ func WaitForFile(path string, chWait chan error, timeout time.Duration) (bool, e
 		if err := watcher.Add(filepath.Dir(path)); err == nil {
 			inotifyEvents = watcher.Events
 		}
-		defer watcher.Close()
+		defer func() {
+			if err := watcher.Close(); err != nil {
+				logrus.Errorf("Failed to close fsnotify watcher: %v", err)
+			}
+		}()
 	}
 
 	var timeoutChan <-chan time.Time
@@ -148,6 +152,18 @@ func queryPackageVersion(cmdArg ...string) string {
 		cmd := exec.Command(cmdArg[0], cmdArg[1:]...)
 		if outp, err := cmd.Output(); err == nil {
 			output = string(outp)
+			if cmdArg[0] == "/usr/bin/dpkg" {
+				r := strings.Split(output, ": ")
+				queryFormat := `${Package}_${Version}_${Architecture}`
+				cmd = exec.Command("/usr/bin/dpkg-query", "-f", queryFormat, "-W", r[0])
+				if outp, err := cmd.Output(); err == nil {
+					output = string(outp)
+				}
+			}
+		}
+		if cmdArg[0] == "/sbin/apk" {
+			prefix := cmdArg[len(cmdArg)-1] + " is owned by "
+			output = strings.Replace(output, prefix, "", 1)
 		}
 	}
 	return strings.Trim(output, "\n")
@@ -156,10 +172,11 @@ func queryPackageVersion(cmdArg ...string) string {
 func packageVersion(program string) string { // program is full path
 	packagers := [][]string{
 		{"/usr/bin/rpm", "-q", "-f"},
-		{"/usr/bin/dpkg", "-S"},    // Debian, Ubuntu
-		{"/usr/bin/pacman", "-Qo"}, // Arch
-		{"/usr/bin/qfile", "-qv"},  // Gentoo (quick)
-		{"/usr/bin/equery", "b"},   // Gentoo (slow)
+		{"/usr/bin/dpkg", "-S"},     // Debian, Ubuntu
+		{"/usr/bin/pacman", "-Qo"},  // Arch
+		{"/usr/bin/qfile", "-qv"},   // Gentoo (quick)
+		{"/usr/bin/equery", "b"},    // Gentoo (slow)
+		{"/sbin/apk", "info", "-W"}, // Alpine
 	}
 
 	for _, cmd := range packagers {
@@ -295,19 +312,21 @@ func writeHijackHeader(r *http.Request, conn io.Writer) {
 }
 
 // Convert OCICNI port bindings into Inspect-formatted port bindings.
-func makeInspectPortBindings(bindings []types.OCICNIPortMapping, expose map[uint16][]string) map[string][]define.InspectHostPort {
+func makeInspectPortBindings(bindings []types.PortMapping, expose map[uint16][]string) map[string][]define.InspectHostPort {
 	portBindings := make(map[string][]define.InspectHostPort)
 	for _, port := range bindings {
-		key := fmt.Sprintf("%d/%s", port.ContainerPort, port.Protocol)
-		hostPorts := portBindings[key]
-		if hostPorts == nil {
-			hostPorts = []define.InspectHostPort{}
+		protocols := strings.Split(port.Protocol, ",")
+		for _, protocol := range protocols {
+			for i := uint16(0); i < port.Range; i++ {
+				key := fmt.Sprintf("%d/%s", port.ContainerPort+i, protocol)
+				hostPorts := portBindings[key]
+				hostPorts = append(hostPorts, define.InspectHostPort{
+					HostIP:   port.HostIP,
+					HostPort: fmt.Sprintf("%d", port.HostPort+i),
+				})
+				portBindings[key] = hostPorts
+			}
 		}
-		hostPorts = append(hostPorts, define.InspectHostPort{
-			HostIP:   port.HostIP,
-			HostPort: fmt.Sprintf("%d", port.HostPort),
-		})
-		portBindings[key] = hostPorts
 	}
 	// add exposed ports without host port information to match docker
 	for port, protocols := range expose {

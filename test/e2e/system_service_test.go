@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"time"
 
-	. "github.com/containers/podman/v3/test/utils"
-	"github.com/containers/podman/v3/utils"
+	. "github.com/containers/podman/v4/test/utils"
+	"github.com/containers/podman/v4/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
@@ -17,6 +17,10 @@ import (
 
 var _ = Describe("podman system service", func() {
 	var podmanTest *PodmanTestIntegration
+
+	// The timeout used to for the service to respond. As shown in #12167,
+	// this may take some time on machines under high load.
+	var timeout = 20
 
 	BeforeEach(func() {
 		tempdir, err := CreateTempDirInTempDir()
@@ -45,9 +49,7 @@ var _ = Describe("podman system service", func() {
 			defer session.Kill()
 
 			WaitForService(address)
-
-			session.Wait(5 * time.Second)
-			Eventually(session, 5).Should(Exit(0))
+			Eventually(session, timeout).Should(Exit(0))
 		})
 	})
 
@@ -56,6 +58,7 @@ var _ = Describe("podman system service", func() {
 		const magicComment = "pprof service listening on"
 
 		It("are available", func() {
+			Skip("FIXME: Test is too flaky (#12624)")
 			SkipIfRemote("service subcommand not supported remotely")
 
 			address := url.URL{
@@ -90,11 +93,12 @@ var _ = Describe("podman system service", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(body).ShouldNot(BeEmpty())
 
-			session.Interrupt().Wait(2 * time.Second)
-			Eventually(session).Should(Exit(1))
+			session.Interrupt().Wait(time.Duration(timeout) * time.Second)
+			Eventually(session, timeout).Should(Exit(1))
 		})
 
 		It("are not available", func() {
+			Skip("FIXME: Test is too flaky (#12624)")
 			SkipIfRemote("service subcommand not supported remotely")
 
 			address := url.URL{
@@ -112,8 +116,8 @@ var _ = Describe("podman system service", func() {
 			// Combined with test above we have positive/negative test for pprof
 			Expect(session.Err.Contents()).ShouldNot(ContainSubstring(magicComment))
 
-			session.Interrupt().Wait(2 * time.Second)
-			Eventually(session).Should(Exit(1))
+			session.Interrupt().Wait(time.Duration(timeout) * time.Second)
+			Eventually(session, timeout).Should(Exit(1))
 		})
 	})
 })

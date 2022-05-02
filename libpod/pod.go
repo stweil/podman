@@ -1,14 +1,13 @@
 package libpod
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/libpod/lock"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/libpod/lock"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 )
@@ -44,9 +43,9 @@ type PodConfig struct {
 
 	// Labels contains labels applied to the pod
 	Labels map[string]string `json:"labels"`
-	// CgroupParent contains the pod's CGroup parent
+	// CgroupParent contains the pod's Cgroup parent
 	CgroupParent string `json:"cgroupParent"`
-	// UsePodCgroup indicates whether the pod will create its own CGroup and
+	// UsePodCgroup indicates whether the pod will create its own Cgroup and
 	// join containers to it.
 	// If true, all containers joined to the pod will use the pod cgroup as
 	// their cgroup parent, and cannot set a different cgroup parent
@@ -77,7 +76,7 @@ type PodConfig struct {
 
 // podState represents a pod's state
 type podState struct {
-	// CgroupPath is the path to the pod's CGroup
+	// CgroupPath is the path to the pod's Cgroup
 	CgroupPath string `json:"cgroupPath"`
 	// InfraContainerID is the container that holds pod namespace information
 	// Most often an infra container
@@ -159,6 +158,15 @@ func (p *Pod) CPUQuota() int64 {
 	return 0
 }
 
+// NetworkMode returns the Network mode given by the user ex: pod, private...
+func (p *Pod) NetworkMode() string {
+	infra, err := p.runtime.GetContainer(p.state.InfraContainerID)
+	if err != nil {
+		return ""
+	}
+	return infra.NetworkMode()
+}
+
 // PidMode returns the PID mode given by the user ex: pod, private...
 func (p *Pod) PidMode() string {
 	infra, err := p.runtime.GetContainer(p.state.InfraContainerID)
@@ -237,7 +245,7 @@ func (p *Pod) CreateCommand() []string {
 	return p.config.CreateCommand
 }
 
-// CgroupParent returns the pod's CGroup parent
+// CgroupParent returns the pod's Cgroup parent
 func (p *Pod) CgroupParent() string {
 	return p.config.CgroupParent
 }
@@ -289,41 +297,15 @@ func (p *Pod) Hostname() string {
 	return p.config.Hostname
 }
 
-// CgroupPath returns the path to the pod's CGroup
+// CgroupPath returns the path to the pod's Cgroup
 func (p *Pod) CgroupPath() (string, error) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	if err := p.updatePod(); err != nil {
 		return "", err
 	}
-	if p.state.CgroupPath != "" {
-		return p.state.CgroupPath, nil
-	}
 	if p.state.InfraContainerID == "" {
 		return "", errors.Wrap(define.ErrNoSuchCtr, "pod has no infra container")
-	}
-
-	id, err := p.infraContainerID()
-	if err != nil {
-		return "", err
-	}
-
-	if id != "" {
-		ctr, err := p.infraContainer()
-		if err != nil {
-			return "", errors.Wrapf(err, "could not get infra")
-		}
-		if ctr != nil {
-			ctr.Start(context.Background(), true)
-			cgroupPath, err := ctr.CGroupPath()
-			fmt.Println(cgroupPath)
-			if err != nil {
-				return "", errors.Wrapf(err, "could not get container cgroup")
-			}
-			p.state.CgroupPath = cgroupPath
-			p.save()
-			return cgroupPath, nil
-		}
 	}
 	return p.state.CgroupPath, nil
 }
@@ -422,10 +404,6 @@ type PodContainerStats struct {
 
 // GetPodStats returns the stats for each of its containers
 func (p *Pod) GetPodStats(previousContainerStats map[string]*define.ContainerStats) (map[string]*define.ContainerStats, error) {
-	var (
-		ok       bool
-		prevStat *define.ContainerStats
-	)
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
@@ -438,10 +416,7 @@ func (p *Pod) GetPodStats(previousContainerStats map[string]*define.ContainerSta
 	}
 	newContainerStats := make(map[string]*define.ContainerStats)
 	for _, c := range containers {
-		if prevStat, ok = previousContainerStats[c.ID()]; !ok {
-			prevStat = &define.ContainerStats{}
-		}
-		newStats, err := c.GetContainerStats(prevStat)
+		newStats, err := c.GetContainerStats(previousContainerStats[c.ID()])
 		// If the container wasn't running, don't include it
 		// but also suppress the error
 		if err != nil && errors.Cause(err) != define.ErrCtrStateInvalid {

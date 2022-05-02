@@ -6,7 +6,7 @@ podman-generate-kube - Generate Kubernetes YAML based on containers, pods or vol
 **podman generate kube** [*options*] *container...* | *pod...* | *volume...*
 
 ## DESCRIPTION
-**podman generate kube** will generate Kubernetes YAML (v1 specification) from Podman containers, pods or volumes. Whether
+**podman generate kube** will generate Kubernetes YAML (v1 specification) from Podman containers, pods or volumes. Regardless of whether
 the input is for containers or pods, Podman will always generate the specification as a Pod. The input may be in the form
 of one or more containers, pods or volumes names or IDs.
 
@@ -18,6 +18,13 @@ Potential name conflicts between volumes are avoided by using a standard naming 
 
 Note that if an init container is created with type `once` and the pod has been started, the init container will not show up in the generated kube YAML as `once` type init containers are deleted after they are run. If the pod has only been created and not started, it will be in the generated kube YAML.
 Init containers created with type `always` will always be generated in the kube YAML as they are never deleted, even after running to completion.
+
+*Note*: When using volumes and generating a Kubernetes YAML for an unprivileged and rootless podman container on an **SELinux enabled system**,  one of the following options must be completed:
+  * Add the "privileged: true" option to the pod spec
+  * Add `type: spc_t` under the `securityContext` `seLinuxOptions` in the pod spec
+  * Relabel the volume via the CLI command `chcon -t container_file_t -R <directory>`
+
+Once completed, the correct permissions will be in place to access the volume when the pod/container is created in a Kubernetes cluster.
 
 Note that the generated Kubernetes YAML file can be used to re-run the deployment via podman-play-kube(1).
 
@@ -206,7 +213,7 @@ status:
 ```
 
 ## SEE ALSO
-podman(1), podman-container(1), podman-pod(1), podman-play-kube(1)
+**[podman(1)](podman.1.md)**, **[podman-container(1)](podman-container.1.md)**, **[podman-pod(1)](podman-pod.1.md)**, **[podman-play-kube(1)](podman-play-kube.1.md)**
 
 ## HISTORY
 December 2018, Originally compiled by Brent Baude (bbaude at redhat dot com)

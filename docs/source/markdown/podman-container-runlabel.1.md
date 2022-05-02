@@ -35,17 +35,18 @@ Path of the containers-auth.json(5) file. Default is ${XDG\_RUNTIME\_DIR}/contai
 
 Note: You can also override the default path of the authentication file by setting the REGISTRY\_AUTH\_FILE environment variable. `export REGISTRY_AUTH_FILE=path`
 
-#### **--display**
-
-Display the label's value of the image having populated its environment variables.  The runlabel command will not execute if --display is specified.
-
 #### **--cert-dir**=*path*
 
-Use certificates at *path* (\*.crt, \*.cert, \*.key) to connect to the registry.  Please refer to containers-certs.d(5) for details. (This option is not available with the remote Podman client)
+Use certificates at *path* (\*.crt, \*.cert, \*.key) to connect to the registry. (Default: /etc/containers/certs.d)
+Please refer to containers-certs.d(5) for details. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--creds**=*[username[:password]]*
 
 The [username[:password]] to use to authenticate with the registry if required.  If one or both values are not supplied, a command line prompt will appear and the value can be entered.  The password is entered without echo.
+
+#### **--display**
+
+Display the label's value of the image having populated its environment variables.  The runlabel command will not execute if --display is specified.
 
 #### **--help**, **-h**
 Print usage statement
@@ -84,7 +85,7 @@ $ podman container runlabel --display run foobar
 ```
 
 ## SEE ALSO
-podman(1), crun(1), runc(1), containers-auth.json(5), containers-certs.d(5), containers-registries.conf(5)
+**[podman(1)](podman.1.md)**, **[crun(1)](https://github.com/containers/crun/blob/main/crun.1.md)**, **[runc(8)](https://github.com/opencontainers/runc/blob/master/man/runc.8.md)**, **[containers-certs.d(5)](https://github.com/containers/image/blob/main/docs/containers-certs.d.5.md)**, **[containers-auth.json(5)](https://github.com/containers/image/blob/main/docs/containers-auth.json.5.md)**, **[containers-registries.conf(5)](https://github.com/containers/image/blob/main/docs/containers-registries.conf.5.md)**
 
 ## HISTORY
 August 2021, Refinements by Valentin Rothberg (rothberg at redhat dot com)

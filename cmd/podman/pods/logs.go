@@ -4,12 +4,12 @@ import (
 	"os"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/cmd/podman/validate"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/cmd/podman/validate"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/util"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -27,11 +27,11 @@ type logsOptionsWrapper struct {
 var (
 	logsPodOptions     logsOptionsWrapper
 	logsPodDescription = `Displays logs for pod with one or more containers.`
-	logsPodCommand     = &cobra.Command{
+	podLogsCommand     = &cobra.Command{
 		Use:   "logs [options] POD",
 		Short: "Fetch logs for pod with one or more containers",
 		Long:  logsPodDescription,
-		// We dont want users to invoke latest and pod togather
+		// We dont want users to invoke latest and pod together
 		Args: func(cmd *cobra.Command, args []string) error {
 			switch {
 			case registry.IsRemote() && logsPodOptions.Latest:
@@ -53,35 +53,16 @@ var (
 		podman pod logs --follow=true --since 10m podID
 		podman pod logs mywebserver`,
 	}
-
-	containerLogsCommand = &cobra.Command{
-		Use:               logsPodCommand.Use,
-		Short:             logsPodCommand.Short,
-		Long:              logsPodCommand.Long,
-		Args:              logsPodCommand.Args,
-		RunE:              logsPodCommand.RunE,
-		ValidArgsFunction: logsPodCommand.ValidArgsFunction,
-		Example: `podman pod logs podId
-		podman pod logs -c ctrname podName
-		podman pod logs --tail 2 mywebserver
-		podman pod logs --follow=true --since 10m podID`,
-	}
 )
 
 func init() {
+	// pod logs
 	registry.Commands = append(registry.Commands, registry.CliCommand{
-		Command: logsPodCommand,
-	})
-	logsFlags(logsPodCommand)
-	validate.AddLatestFlag(logsPodCommand, &logsPodOptions.Latest)
-
-	// container logs
-	registry.Commands = append(registry.Commands, registry.CliCommand{
-		Command: containerLogsCommand,
+		Command: podLogsCommand,
 		Parent:  podCmd,
 	})
-	logsFlags(containerLogsCommand)
-	validate.AddLatestFlag(containerLogsCommand, &logsPodOptions.Latest)
+	logsFlags(podLogsCommand)
+	validate.AddLatestFlag(podLogsCommand, &logsPodOptions.Latest)
 }
 
 func logsFlags(cmd *cobra.Command) {
@@ -106,7 +87,10 @@ func logsFlags(cmd *cobra.Command) {
 	flags.Int64Var(&logsPodOptions.Tail, tailFlagName, -1, "Output the specified number of LINES at the end of the logs.")
 	_ = cmd.RegisterFlagCompletionFunc(tailFlagName, completion.AutocompleteNone)
 
+	flags.BoolVarP(&logsPodOptions.Names, "names", "n", false, "Output container names instead of container IDs in the log")
 	flags.BoolVarP(&logsPodOptions.Timestamps, "timestamps", "t", false, "Output the timestamps in the log")
+	flags.BoolVarP(&logsPodOptions.Colors, "color", "", false, "Output the containers within a pod with different colors in the log")
+
 	flags.SetInterspersed(false)
 	_ = flags.MarkHidden("details")
 }

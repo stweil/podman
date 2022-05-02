@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 package libpod
@@ -13,13 +14,16 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/containers/podman/v3/pkg/errorhandling"
-	"github.com/containers/podman/v3/pkg/rootless"
-	"github.com/containers/podman/v3/pkg/rootlessport"
-	"github.com/containers/podman/v3/pkg/servicereaper"
+	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/containers/common/libnetwork/types"
+	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v4/pkg/rootlessport"
+	"github.com/containers/podman/v4/pkg/servicereaper"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -37,9 +41,9 @@ type slirpFeatures struct {
 type slirp4netnsCmdArg struct {
 	Proto     string `json:"proto,omitempty"`
 	HostAddr  string `json:"host_addr"`
-	HostPort  int32  `json:"host_port"`
+	HostPort  uint16 `json:"host_port"`
 	GuestAddr string `json:"guest_addr"`
-	GuestPort int32  `json:"guest_port"`
+	GuestPort uint16 `json:"guest_port"`
 }
 
 type slirp4netnsCmd struct {
@@ -57,6 +61,8 @@ type slirp4netnsNetworkOptions struct {
 	outboundAddr        string
 	outboundAddr6       string
 }
+
+const ipv6ConfDefaultAcceptDadSysctl = "/proc/sys/net/ipv6/conf/default/accept_dad"
 
 func checkSlirpFlags(path string) (*slirpFeatures, error) {
 	cmd := exec.Command(path, "--help")
@@ -76,12 +82,15 @@ func checkSlirpFlags(path string) (*slirpFeatures, error) {
 }
 
 func parseSlirp4netnsNetworkOptions(r *Runtime, extraOptions []string) (*slirp4netnsNetworkOptions, error) {
-	slirpOptions := append(r.config.Engine.NetworkCmdOptions, extraOptions...)
+	slirpOptions := make([]string, 0, len(r.config.Engine.NetworkCmdOptions)+len(extraOptions))
+	slirpOptions = append(slirpOptions, r.config.Engine.NetworkCmdOptions...)
+	slirpOptions = append(slirpOptions, extraOptions...)
 	slirp4netnsOpts := &slirp4netnsNetworkOptions{
 		// overwrite defaults
 		disableHostLoopback: true,
 		mtu:                 slirp4netnsMTU,
 		noPivotRoot:         r.config.Engine.NoPivotRoot,
+		enableIPv6:          true,
 	}
 	for _, o := range slirpOptions {
 		parts := strings.SplitN(o, "=", 2)
@@ -204,14 +213,13 @@ func createBasicSlirp4netnsCmdArgs(options *slirp4netnsNetworkOptions, features 
 }
 
 // setupSlirp4netns can be called in rootful as well as in rootless
-func (r *Runtime) setupSlirp4netns(ctr *Container) error {
+func (r *Runtime) setupSlirp4netns(ctr *Container, netns ns.NetNS) error {
 	path := r.config.Engine.NetworkCmdPath
 	if path == "" {
 		var err error
 		path, err = exec.LookPath("slirp4netns")
 		if err != nil {
-			logrus.Errorf("Could not find slirp4netns, the network namespace won't be configured: %v", err)
-			return nil
+			return fmt.Errorf("could not find slirp4netns, the network namespace can't be configured: %w", err)
 		}
 	}
 
@@ -260,7 +268,7 @@ func (r *Runtime) setupSlirp4netns(ctr *Container) error {
 		if err != nil {
 			return errors.Wrapf(err, "failed to create rootless network sync pipe")
 		}
-		netnsPath = ctr.state.NetNS.Path()
+		netnsPath = netns.Path()
 		cmdArgs = append(cmdArgs, "--netns-type=path", netnsPath, "tap0")
 	} else {
 		defer errorhandling.CloseQuiet(ctr.rootlessSlirpSyncR)
@@ -297,7 +305,58 @@ func (r *Runtime) setupSlirp4netns(ctr *Container) error {
 	}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+
+	var slirpReadyWg, netnsReadyWg *sync.WaitGroup
+	if netOptions.enableIPv6 {
+		// use two wait groups to make sure we set the sysctl before
+		// starting slirp and reset it only after slirp is ready
+		slirpReadyWg = &sync.WaitGroup{}
+		netnsReadyWg = &sync.WaitGroup{}
+		slirpReadyWg.Add(1)
+		netnsReadyWg.Add(1)
+
+		go func() {
+			err := ns.WithNetNSPath(netnsPath, func(_ ns.NetNS) error {
+				// Duplicate Address Detection slows the ipv6 setup down for 1-2 seconds.
+				// Since slirp4netns is run it is own namespace and not directly routed
+				// we can skip this to make the ipv6 address immediately available.
+				// We change the default to make sure the slirp tap interface gets the
+				// correct value assigned so DAD is disabled for it
+				// Also make sure to change this value back to the original after slirp4netns
+				// is ready in case users rely on this sysctl.
+				orgValue, err := ioutil.ReadFile(ipv6ConfDefaultAcceptDadSysctl)
+				if err != nil {
+					netnsReadyWg.Done()
+					// on ipv6 disabled systems the sysctl does not exists
+					// so we should not error
+					if errors.Is(err, os.ErrNotExist) {
+						return nil
+					}
+					return err
+				}
+				err = ioutil.WriteFile(ipv6ConfDefaultAcceptDadSysctl, []byte("0"), 0644)
+				netnsReadyWg.Done()
+				if err != nil {
+					return err
+				}
+
+				// wait until slirp4nets is ready before resetting this value
+				slirpReadyWg.Wait()
+				return ioutil.WriteFile(ipv6ConfDefaultAcceptDadSysctl, orgValue, 0644)
+			})
+			if err != nil {
+				logrus.Warnf("failed to set net.ipv6.conf.default.accept_dad sysctl: %v", err)
+			}
+		}()
+
+		// wait until we set the sysctl
+		netnsReadyWg.Wait()
+	}
+
 	if err := cmd.Start(); err != nil {
+		if netOptions.enableIPv6 {
+			slirpReadyWg.Done()
+		}
 		return errors.Wrapf(err, "failed to start slirp4netns process")
 	}
 	defer func() {
@@ -307,7 +366,11 @@ func (r *Runtime) setupSlirp4netns(ctr *Container) error {
 		}
 	}()
 
-	if err := waitForSync(syncR, cmd, logFile, 1*time.Second); err != nil {
+	err = waitForSync(syncR, cmd, logFile, 1*time.Second)
+	if netOptions.enableIPv6 {
+		slirpReadyWg.Done()
+	}
+	if err != nil {
 		return err
 	}
 
@@ -327,7 +390,7 @@ func (r *Runtime) setupSlirp4netns(ctr *Container) error {
 		if netOptions.isSlirpHostForward {
 			return r.setupRootlessPortMappingViaSlirp(ctr, cmd, apiSocket)
 		}
-		return r.setupRootlessPortMappingViaRLK(ctr, netnsPath)
+		return r.setupRootlessPortMappingViaRLK(ctr, netnsPath, nil)
 	}
 
 	return nil
@@ -440,7 +503,7 @@ func waitForSync(syncR *os.File, cmd *exec.Cmd, logFile io.ReadSeeker, timeout t
 	return nil
 }
 
-func (r *Runtime) setupRootlessPortMappingViaRLK(ctr *Container, netnsPath string) error {
+func (r *Runtime) setupRootlessPortMappingViaRLK(ctr *Container, netnsPath string, netStatus map[string]types.StatusBlock) error {
 	syncR, syncW, err := os.Pipe()
 	if err != nil {
 		return errors.Wrapf(err, "failed to open pipe")
@@ -467,9 +530,9 @@ func (r *Runtime) setupRootlessPortMappingViaRLK(ctr *Container, netnsPath strin
 		}
 	}
 
-	childIP := getRootlessPortChildIP(ctr)
+	childIP := getRootlessPortChildIP(ctr, netStatus)
 	cfg := rootlessport.Config{
-		Mappings:    ctr.config.PortMappings,
+		Mappings:    ctr.convertPortMappings(),
 		NetNSPath:   netnsPath,
 		ExitFD:      3,
 		ReadyFD:     4,
@@ -492,9 +555,7 @@ func (r *Runtime) setupRootlessPortMappingViaRLK(ctr *Container, netnsPath strin
 	cmd.Args = []string{rootlessport.BinaryName}
 
 	// Leak one end of the pipe in rootlessport process, the other will be sent to conmon
-	if ctr.rootlessPortSyncR != nil {
-		defer errorhandling.CloseQuiet(ctr.rootlessPortSyncR)
-	}
+	defer errorhandling.CloseQuiet(ctr.rootlessPortSyncR)
 
 	cmd.ExtraFiles = append(cmd.ExtraFiles, ctr.rootlessPortSyncR, syncW)
 	cmd.Stdin = cfgR
@@ -556,61 +617,74 @@ func (r *Runtime) setupRootlessPortMappingViaSlirp(ctr *Container, cmd *exec.Cmd
 
 	// for each port we want to add we need to open a connection to the slirp4netns control socket
 	// and send the add_hostfwd command.
-	for _, i := range ctr.config.PortMappings {
-		conn, err := net.Dial("unix", apiSocket)
-		if err != nil {
-			return errors.Wrapf(err, "cannot open connection to %s", apiSocket)
-		}
-		defer func() {
-			if err := conn.Close(); err != nil {
-				logrus.Errorf("Unable to close connection: %q", err)
+	for _, port := range ctr.convertPortMappings() {
+		protocols := strings.Split(port.Protocol, ",")
+		for _, protocol := range protocols {
+			hostIP := port.HostIP
+			if hostIP == "" {
+				hostIP = "0.0.0.0"
 			}
-		}()
-		hostIP := i.HostIP
-		if hostIP == "" {
-			hostIP = "0.0.0.0"
-		}
-		apiCmd := slirp4netnsCmd{
-			Execute: "add_hostfwd",
-			Args: slirp4netnsCmdArg{
-				Proto:     i.Protocol,
-				HostAddr:  hostIP,
-				HostPort:  i.HostPort,
-				GuestPort: i.ContainerPort,
-			},
-		}
-		// create the JSON payload and send it.  Mark the end of request shutting down writes
-		// to the socket, as requested by slirp4netns.
-		data, err := json.Marshal(&apiCmd)
-		if err != nil {
-			return errors.Wrapf(err, "cannot marshal JSON for slirp4netns")
-		}
-		if _, err := conn.Write([]byte(fmt.Sprintf("%s\n", data))); err != nil {
-			return errors.Wrapf(err, "cannot write to control socket %s", apiSocket)
-		}
-		if err := conn.(*net.UnixConn).CloseWrite(); err != nil {
-			return errors.Wrapf(err, "cannot shutdown the socket %s", apiSocket)
-		}
-		buf := make([]byte, 2048)
-		readLength, err := conn.Read(buf)
-		if err != nil {
-			return errors.Wrapf(err, "cannot read from control socket %s", apiSocket)
-		}
-		// if there is no 'error' key in the received JSON data, then the operation was
-		// successful.
-		var y map[string]interface{}
-		if err := json.Unmarshal(buf[0:readLength], &y); err != nil {
-			return errors.Wrapf(err, "error parsing error status from slirp4netns")
-		}
-		if e, found := y["error"]; found {
-			return errors.Errorf("error from slirp4netns while setting up port redirection: %v", e)
+			for i := uint16(0); i < port.Range; i++ {
+				if err := openSlirp4netnsPort(apiSocket, protocol, hostIP, port.HostPort+i, port.ContainerPort+i); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	logrus.Debug("slirp4netns port-forwarding setup via add_hostfwd is ready")
 	return nil
 }
 
-func getRootlessPortChildIP(c *Container) string {
+// openSlirp4netnsPort sends the slirp4netns pai quey to the given socket
+func openSlirp4netnsPort(apiSocket, proto, hostip string, hostport, guestport uint16) error {
+	conn, err := net.Dial("unix", apiSocket)
+	if err != nil {
+		return errors.Wrapf(err, "cannot open connection to %s", apiSocket)
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			logrus.Errorf("Unable to close slirp4netns connection: %q", err)
+		}
+	}()
+	apiCmd := slirp4netnsCmd{
+		Execute: "add_hostfwd",
+		Args: slirp4netnsCmdArg{
+			Proto:     proto,
+			HostAddr:  hostip,
+			HostPort:  hostport,
+			GuestPort: guestport,
+		},
+	}
+	// create the JSON payload and send it.  Mark the end of request shutting down writes
+	// to the socket, as requested by slirp4netns.
+	data, err := json.Marshal(&apiCmd)
+	if err != nil {
+		return errors.Wrapf(err, "cannot marshal JSON for slirp4netns")
+	}
+	if _, err := conn.Write([]byte(fmt.Sprintf("%s\n", data))); err != nil {
+		return errors.Wrapf(err, "cannot write to control socket %s", apiSocket)
+	}
+	if err := conn.(*net.UnixConn).CloseWrite(); err != nil {
+		return errors.Wrapf(err, "cannot shutdown the socket %s", apiSocket)
+	}
+	buf := make([]byte, 2048)
+	readLength, err := conn.Read(buf)
+	if err != nil {
+		return errors.Wrapf(err, "cannot read from control socket %s", apiSocket)
+	}
+	// if there is no 'error' key in the received JSON data, then the operation was
+	// successful.
+	var y map[string]interface{}
+	if err := json.Unmarshal(buf[0:readLength], &y); err != nil {
+		return errors.Wrapf(err, "error parsing error status from slirp4netns")
+	}
+	if e, found := y["error"]; found {
+		return errors.Errorf("from slirp4netns while setting up port redirection: %v", e)
+	}
+	return nil
+}
+
+func getRootlessPortChildIP(c *Container, netStatus map[string]types.StatusBlock) string {
 	if c.config.NetMode.IsSlirp4netns() {
 		slirp4netnsIP, err := GetSlirp4netnsIP(c.slirp4netnsSubnet)
 		if err != nil {
@@ -620,14 +694,14 @@ func getRootlessPortChildIP(c *Container) string {
 	}
 
 	var ipv6 net.IP
-	for _, status := range c.getNetworkStatus() {
+	for _, status := range netStatus {
 		for _, netInt := range status.Interfaces {
-			for _, netAddress := range netInt.Networks {
-				ipv4 := netAddress.Subnet.IP.To4()
+			for _, netAddress := range netInt.Subnets {
+				ipv4 := netAddress.IPNet.IP.To4()
 				if ipv4 != nil {
 					return ipv4.String()
 				}
-				ipv6 = netAddress.Subnet.IP
+				ipv6 = netAddress.IPNet.IP
 			}
 		}
 	}
@@ -640,15 +714,15 @@ func getRootlessPortChildIP(c *Container) string {
 // reloadRootlessRLKPortMapping will trigger a reload for the port mappings in the rootlessport process.
 // This should only be called by network connect/disconnect and only as rootless.
 func (c *Container) reloadRootlessRLKPortMapping() error {
-	childIP := getRootlessPortChildIP(c)
+	if len(c.config.PortMappings) == 0 {
+		return nil
+	}
+	childIP := getRootlessPortChildIP(c, c.state.NetworkStatus)
 	logrus.Debugf("reloading rootless ports for container %s, childIP is %s", c.config.ID, childIP)
 
 	conn, err := openUnixSocket(filepath.Join(c.runtime.config.Engine.TmpDir, "rp", c.config.ID))
 	if err != nil {
-		// This is not a hard error for backwards compatibility. A container started
-		// with an old version did not created the rootlessport socket.
-		logrus.Warnf("Could not reload rootless port mappings, port forwarding may no longer work correctly: %v", err)
-		return nil
+		return errors.Wrap(err, "could not reload rootless port mappings, port forwarding may no longer work correctly")
 	}
 	defer conn.Close()
 	enc := json.NewEncoder(conn)

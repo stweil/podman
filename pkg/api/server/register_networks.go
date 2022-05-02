@@ -3,8 +3,8 @@ package server
 import (
 	"net/http"
 
-	"github.com/containers/podman/v3/pkg/api/handlers/compat"
-	"github.com/containers/podman/v3/pkg/api/handlers/libpod"
+	"github.com/containers/podman/v4/pkg/api/handlers/compat"
+	"github.com/containers/podman/v4/pkg/api/handlers/libpod"
 	"github.com/gorilla/mux"
 )
 
@@ -101,12 +101,19 @@ func (s *APIServer) registerNetworkHandlers(r *mux.Router) error {
 	// parameters:
 	//  - in: body
 	//    name: create
-	//    description: attributes for creating a container
+	//    description: attributes for creating a network
 	//    schema:
 	//      $ref: "#/definitions/NetworkCreateRequest"
 	// responses:
-	//   200:
-	//     $ref: "#/responses/CompatNetworkCreate"
+	//   201:
+	//     description: network created
+	//     schema:
+	//       type: object
+	//       properties:
+	//         Id:
+	//           type: string
+	//         Warning:
+	//           type: string
 	//   400:
 	//     $ref: "#/responses/BadParamError"
 	//   500:
@@ -131,7 +138,7 @@ func (s *APIServer) registerNetworkHandlers(r *mux.Router) error {
 	//    name: create
 	//    description: attributes for connecting a container to a network
 	//    schema:
-	//      $ref: "#/definitions/NetworkConnectRequest"
+	//      $ref: "#/definitions/NetworkCompatConnectRequest"
 	// responses:
 	//   200:
 	//     description: OK
@@ -159,7 +166,7 @@ func (s *APIServer) registerNetworkHandlers(r *mux.Router) error {
 	//    name: create
 	//    description: attributes for disconnecting a container from a network
 	//    schema:
-	//      $ref: "#/definitions/NetworkDisconnectRequest"
+	//      $ref: "#/definitions/NetworkCompatDisconnectRequest"
 	// responses:
 	//   200:
 	//     description: OK
@@ -312,7 +319,7 @@ func (s *APIServer) registerNetworkHandlers(r *mux.Router) error {
 	// parameters:
 	//  - in: body
 	//    name: create
-	//    description: attributes for creating a container
+	//    description: attributes for creating a network
 	//    schema:
 	//      $ref: "#/definitions/NetworkCreateLibpod"
 	// responses:
@@ -320,6 +327,8 @@ func (s *APIServer) registerNetworkHandlers(r *mux.Router) error {
 	//     $ref: "#/responses/NetworkCreateReport"
 	//   400:
 	//     $ref: "#/responses/BadParamError"
+	//   409:
+	//     $ref: "#/responses/ConflictError"
 	//   500:
 	//     $ref: "#/responses/InternalError"
 	r.HandleFunc(VersionedPath("/libpod/networks/create"), s.APIHandler(libpod.CreateNetwork)).Methods(http.MethodPost)
@@ -368,7 +377,7 @@ func (s *APIServer) registerNetworkHandlers(r *mux.Router) error {
 	//    name: create
 	//    description: attributes for disconnecting a container from a network
 	//    schema:
-	//      $ref: "#/definitions/NetworkDisconnectRequest"
+	//      $ref: "#/definitions/NetworkCompatDisconnectRequest"
 	// responses:
 	//   200:
 	//     description: OK

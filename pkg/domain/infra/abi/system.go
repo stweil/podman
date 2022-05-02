@@ -6,16 +6,15 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 
+	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/cgroups"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/domain/entities/reports"
-	"github.com/containers/podman/v3/pkg/rootless"
-	"github.com/containers/podman/v3/pkg/util"
-	"github.com/containers/podman/v3/utils"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/domain/entities/reports"
+	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v4/utils"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/unshare"
 	"github.com/pkg/errors"
@@ -151,7 +150,7 @@ func (ic *ContainerEngine) SystemPrune(ctx context.Context, options entities.Sys
 		if err != nil {
 			return nil, err
 		}
-		reclaimedSpace = reclaimedSpace + reports.PruneReportsSize(containerPruneReports)
+		reclaimedSpace += reports.PruneReportsSize(containerPruneReports)
 		systemPruneReport.ContainerPruneReports = append(systemPruneReport.ContainerPruneReports, containerPruneReports...)
 		imagePruneOptions := entities.ImagePruneOptions{
 			All:    options.All,
@@ -159,7 +158,7 @@ func (ic *ContainerEngine) SystemPrune(ctx context.Context, options entities.Sys
 		}
 		imageEngine := ImageEngine{Libpod: ic.Libpod}
 		imagePruneReports, err := imageEngine.Prune(ctx, imagePruneOptions)
-		reclaimedSpace = reclaimedSpace + reports.PruneReportsSize(imagePruneReports)
+		reclaimedSpace += reports.PruneReportsSize(imagePruneReports)
 
 		if err != nil {
 			return nil, err
@@ -179,7 +178,7 @@ func (ic *ContainerEngine) SystemPrune(ctx context.Context, options entities.Sys
 			if len(volumePruneReport) > 0 {
 				found = true
 			}
-			reclaimedSpace = reclaimedSpace + reports.PruneReportsSize(volumePruneReport)
+			reclaimedSpace += reports.PruneReportsSize(volumePruneReport)
 			systemPruneReport.VolumePruneReports = append(systemPruneReport.VolumePruneReports, volumePruneReport...)
 		}
 	}
@@ -269,7 +268,7 @@ func (ic *ContainerEngine) SystemDf(ctx context.Context, options entities.System
 	}
 
 	dfVolumes := make([]*entities.SystemDfVolumeReport, 0, len(vols))
-	var reclaimableSize int64
+	var reclaimableSize uint64
 	for _, v := range vols {
 		var consInUse int
 		mountPoint, err := v.MountPoint()
@@ -282,7 +281,7 @@ func (ic *ContainerEngine) SystemDf(ctx context.Context, options entities.System
 			// TODO: fix this.
 			continue
 		}
-		volSize, err := sizeOfPath(mountPoint)
+		volSize, err := util.SizeOfPath(mountPoint)
 		if err != nil {
 			return nil, err
 		}
@@ -301,8 +300,8 @@ func (ic *ContainerEngine) SystemDf(ctx context.Context, options entities.System
 		report := entities.SystemDfVolumeReport{
 			VolumeName:      v.Name(),
 			Links:           consInUse,
-			Size:            volSize,
-			ReclaimableSize: reclaimableSize,
+			Size:            int64(volSize),
+			ReclaimableSize: int64(reclaimableSize),
 		}
 		dfVolumes = append(dfVolumes, &report)
 	}
@@ -311,19 +310,6 @@ func (ic *ContainerEngine) SystemDf(ctx context.Context, options entities.System
 		Containers: dfContainers,
 		Volumes:    dfVolumes,
 	}, nil
-}
-
-// sizeOfPath determines the file usage of a given path. it was called volumeSize in v1
-// and now is made to be generic and take a path instead of a libpod volume
-func sizeOfPath(path string) (int64, error) {
-	var size int64
-	err := filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() {
-			size += info.Size()
-		}
-		return err
-	})
-	return size, err
 }
 
 func (se *SystemEngine) Reset(ctx context.Context) error {
@@ -360,15 +346,18 @@ func (ic *ContainerEngine) Unshare(ctx context.Context, args []string, options e
 		return cmd.Run()
 	}
 
-	if options.RootlessCNI {
-		rootlesscni, err := ic.Libpod.GetRootlessCNINetNs(true)
+	if options.RootlessNetNS {
+		rootlessNetNS, err := ic.Libpod.GetRootlessNetNs(true)
 		if err != nil {
 			return err
 		}
-		// make sure to unlock, unshare can run for a long time
-		rootlesscni.Lock.Unlock()
-		defer rootlesscni.Cleanup(ic.Libpod)
-		return rootlesscni.Do(unshare)
+		// Make sure to unlock, unshare can run for a long time.
+		rootlessNetNS.Lock.Unlock()
+		// We do not want to cleanup the netns after unshare.
+		// The problem is that we cannot know if we need to cleanup and
+		// secondly unshare should allow user to setup the namespace with
+		// special things, e.g. potentially macvlan or something like that.
+		return rootlessNetNS.Do(unshare)
 	}
 	return unshare()
 }

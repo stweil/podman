@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	commonComp "github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v3/cmd/podman/registry"
+	"github.com/containers/podman/v4/cmd/podman/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +31,7 @@ var (
 		Example: `podman completion bash
   podman completion zsh -f _podman
   podman completion fish --no-desc`,
-		//don't show this command to users
+		// don't show this command to users
 		Hidden: true,
 	}
 )

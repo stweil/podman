@@ -97,7 +97,7 @@ EPOCH_TEST_COMMIT="$CIRRUS_BASE_SHA"
 # testing operations on all platforms and versions.  This is necessary
 # to avoid needlessly passing through global/system values across
 # contexts, such as host->container or root->rootless user
-PASSTHROUGH_ENV_RE='(^CI.*)|(^CIRRUS)|(^DISTRO_NV)|(^GOPATH)|(^GOCACHE)|(^GOSRC)|(^SCRIPT_BASE)|(CGROUP_MANAGER)|(OCI_RUNTIME)|(^TEST.*)|(^PODBIN_NAME)|(^PRIV_NAME)|(^ALT_NAME)|(^ROOTLESS_USER)|(SKIP_USERNS)|(.*_NAME)|(.*_FQIN)'
+PASSTHROUGH_ENV_RE='(^CI.*)|(^CIRRUS)|(^DISTRO_NV)|(^GOPATH)|(^GOCACHE)|(^GOSRC)|(^SCRIPT_BASE)|(CGROUP_MANAGER)|(OCI_RUNTIME)|(^TEST.*)|(^PODBIN_NAME)|(^PRIV_NAME)|(^ALT_NAME)|(^ROOTLESS_USER)|(SKIP_USERNS)|(.*_NAME)|(.*_FQIN)|(NETWORK_BACKEND)'
 # Unsafe env. vars for display
 SECRET_ENV_RE='(ACCOUNT)|(GC[EP]..+)|(SSH)|(PASSWORD)|(TOKEN)'
 
@@ -138,19 +138,25 @@ passthrough_envars(){
 }
 
 setup_rootless() {
-    req_env_vars ROOTLESS_USER GOPATH GOSRC SECRET_ENV_RE
+    req_env_vars GOPATH GOSRC SECRET_ENV_RE
+
+    ROOTLESS_USER="${ROOTLESS_USER:-some${RANDOM}dude}"
 
     local rootless_uid
     local rootless_gid
     local env_var_val
+    local akfilepath
+    local sshcmd
 
     # Only do this once; established by setup_environment.sh
     # shellcheck disable=SC2154
     if passwd --status $ROOTLESS_USER
     then
-        msg "Updating $ROOTLESS_USER user permissions on possibly changed libpod code"
-        chown -R $ROOTLESS_USER:$ROOTLESS_USER "$GOPATH" "$GOSRC"
-        return 0
+        if [[ $PRIV_NAME = "rootless" ]]; then
+            msg "Updating $ROOTLESS_USER user permissions on possibly changed libpod code"
+            chown -R $ROOTLESS_USER:$ROOTLESS_USER "$GOPATH" "$GOSRC"
+            return 0
+        fi
     fi
     msg "************************************************************"
     msg "Setting up rootless user '$ROOTLESS_USER'"
@@ -162,44 +168,83 @@ setup_rootless() {
     msg "creating $rootless_uid:$rootless_gid $ROOTLESS_USER user"
     groupadd -g $rootless_gid $ROOTLESS_USER
     useradd -g $rootless_gid -u $rootless_uid --no-user-group --create-home $ROOTLESS_USER
-    chown -R $ROOTLESS_USER:$ROOTLESS_USER "$GOPATH" "$GOSRC"
 
-    msg "creating ssh key pair for $USER"
+    echo "$ROOTLESS_USER ALL=(root) NOPASSWD: ALL" > /etc/sudoers.d/ci-rootless
+
+    mkdir -p "$HOME/.ssh" "/home/$ROOTLESS_USER/.ssh"
+
+    msg "Creating ssh key pairs"
     [[ -r "$HOME/.ssh/id_rsa" ]] || \
-        ssh-keygen -P "" -f "$HOME/.ssh/id_rsa"
+        ssh-keygen -t rsa -P "" -f "$HOME/.ssh/id_rsa"
+    ssh-keygen -t ed25519 -P "" -f "/home/$ROOTLESS_USER/.ssh/id_ed25519"
+    ssh-keygen -t rsa -P "" -f "/home/$ROOTLESS_USER/.ssh/id_rsa"
 
-    msg "Allowing ssh key for $ROOTLESS_USER"
-    (umask 077 && mkdir "/home/$ROOTLESS_USER/.ssh")
-    chown -R $ROOTLESS_USER:$ROOTLESS_USER "/home/$ROOTLESS_USER/.ssh"
-    install -o $ROOTLESS_USER -g $ROOTLESS_USER -m 0600 \
-        "$HOME/.ssh/id_rsa.pub" "/home/$ROOTLESS_USER/.ssh/authorized_keys"
-    # Makes debugging easier
-    cat /root/.ssh/authorized_keys >> "/home/$ROOTLESS_USER/.ssh/authorized_keys"
-
-    msg "Configuring subuid and subgid"
-    grep -q "${ROOTLESS_USER}" /etc/subuid || \
-        echo "${ROOTLESS_USER}:$[rootless_uid * 100]:65536" | \
-            tee -a /etc/subuid >> /etc/subgid
+    msg "Setup authorized_keys"
+    cat $HOME/.ssh/*.pub /home/$ROOTLESS_USER/.ssh/*.pub >> $HOME/.ssh/authorized_keys
+    cat $HOME/.ssh/*.pub /home/$ROOTLESS_USER/.ssh/*.pub >> /home/$ROOTLESS_USER/.ssh/authorized_keys
 
     msg "Ensure the ssh daemon is up and running within 5 minutes"
     systemctl start sshd
-    lilto ssh $ROOTLESS_USER@localhost \
-           -o UserKnownHostsFile=/dev/null \
-           -o StrictHostKeyChecking=no \
-           -o CheckHostIP=no true
+    lilto systemctl is-active sshd
+
+    msg "Configure ssh file permissions"
+    chmod -R 700 "$HOME/.ssh"
+    chmod -R 700 "/home/$ROOTLESS_USER/.ssh"
+    chown -R $ROOTLESS_USER:$ROOTLESS_USER "/home/$ROOTLESS_USER/.ssh"
+
+    msg "   setup known_hosts for $USER"
+    ssh -q root@localhost \
+        -o UserKnownHostsFile=/root/.ssh/known_hosts \
+        -o UpdateHostKeys=yes \
+        -o StrictHostKeyChecking=no \
+        -o CheckHostIP=no \
+        true
+
+    msg "   setup known_hosts for $ROOTLESS_USER"
+    su $ROOTLESS_USER -c "ssh -q $ROOTLESS_USER@localhost \
+        -o UserKnownHostsFile=/home/$ROOTLESS_USER/.ssh/known_hosts \
+        -o UpdateHostKeys=yes \
+        -o StrictHostKeyChecking=no \
+        -o CheckHostIP=no \
+        true"
 }
 
 install_test_configs() {
-    echo "Installing cni config, policy and registry config"
-    req_env_vars GOSRC SCRIPT_BASE
-    cd $GOSRC || exit 1
-    install -v -D -m 644 ./cni/87-podman-bridge.conflist /etc/cni/net.d/
-    # This config must always sort last in the list of networks (podman picks first one
-    # as the default).  This config prevents allocation of network address space used
-    # by default in google cloud.  https://cloud.google.com/vpc/docs/vpc#ip-ranges
-    install -v -D -m 644 $SCRIPT_BASE/99-do-not-use-google-subnets.conflist /etc/cni/net.d/
-
+    msg "Installing ./test/registries.conf system-wide."
     install -v -D -m 644 ./test/registries.conf /etc/containers/
+}
+
+use_cni() {
+    msg "Unsetting NETWORK_BACKEND for all subsequent environments."
+    echo "export -n NETWORK_BACKEND" >> /etc/ci_environment
+    echo "unset NETWORK_BACKEND" >> /etc/ci_environment
+    export -n NETWORK_BACKEND
+    unset NETWORK_BACKEND
+    msg "Installing default CNI configuration"
+    cd $GOSRC || exit 1
+    rm -rvf /etc/cni/net.d
+    mkdir -p /etc/cni/net.d
+    install -v -D -m 644 ./cni/87-podman-bridge.conflist \
+        /etc/cni/net.d/
+    # This config must always sort last in the list of networks (podman picks
+    # first one as the default).  This config prevents allocation of network
+    # address space used by default in google cloud.
+    # https://cloud.google.com/vpc/docs/vpc#ip-ranges
+    install -v -D -m 644 $SCRIPT_BASE/99-do-not-use-google-subnets.conflist \
+        /etc/cni/net.d/
+}
+
+use_netavark() {
+    msg "Forcing NETWORK_BACKEND=netavark for all subsequent environments."
+    echo "NETWORK_BACKEND=netavark" >> /etc/ci_environment
+    export NETWORK_BACKEND=netavark  # needed for install_test_configs()
+    msg "Removing any/all CNI configuration"
+    rm -rvf /etc/cni/net.d/*
+
+    # TODO: Remove this when netavark/aardvark-dns development slows down
+    warn "Updating netavark/aardvark-dns to avoid frequent VM image rebuilds"
+    # N/B: This is coming from updates-testing repo in F36
+    lilto dnf update -y netavark aardvark-dns
 }
 
 # Remove all files provided by the distro version of podman.

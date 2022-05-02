@@ -1,3 +1,6 @@
+//go:build linux
+// +build linux
+
 package main
 
 import (
@@ -10,10 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/containernetworking/plugins/pkg/ns"
-	"github.com/containers/podman/v3/libpod/network/types"
-	"github.com/containers/podman/v3/pkg/rootlessport"
+	"github.com/containers/common/libnetwork/types"
+	"github.com/containers/podman/v4/pkg/rootlessport"
 	"github.com/pkg/errors"
 	rkport "github.com/rootless-containers/rootlesskit/pkg/port"
 	rkbuiltin "github.com/rootless-containers/rootlesskit/pkg/port/builtin"
@@ -252,9 +256,9 @@ func serve(listener net.Listener, pm rkport.Manager) {
 		ctx := context.TODO()
 		err = handler(ctx, conn, pm)
 		if err != nil {
-			conn.Write([]byte(err.Error()))
+			_, _ = conn.Write([]byte(err.Error()))
 		} else {
-			conn.Write([]byte("OK"))
+			_, _ = conn.Write([]byte("OK"))
 		}
 		conn.Close()
 	}
@@ -289,27 +293,43 @@ func handler(ctx context.Context, conn io.Reader, pm rkport.Manager) error {
 	return nil
 }
 
-func exposePorts(pm rkport.Manager, portMappings []types.OCICNIPortMapping, childIP string) error {
+func exposePorts(pm rkport.Manager, portMappings []types.PortMapping, childIP string) error {
 	ctx := context.TODO()
-	for _, i := range portMappings {
-		hostIP := i.HostIP
-		if hostIP == "" {
-			hostIP = "0.0.0.0"
-		}
-		spec := rkport.Spec{
-			Proto:      i.Protocol,
-			ParentIP:   hostIP,
-			ParentPort: int(i.HostPort),
-			ChildPort:  int(i.ContainerPort),
-			ChildIP:    childIP,
-		}
-		if err := rkportutil.ValidatePortSpec(spec, nil); err != nil {
-			return err
-		}
-		if _, err := pm.AddPort(ctx, spec); err != nil {
-			return err
+	for _, port := range portMappings {
+		protocols := strings.Split(port.Protocol, ",")
+		for _, protocol := range protocols {
+			hostIP := port.HostIP
+			if hostIP == "" {
+				hostIP = "0.0.0.0"
+			}
+			for i := uint16(0); i < port.Range; i++ {
+				spec := rkport.Spec{
+					Proto:      protocol,
+					ParentIP:   hostIP,
+					ParentPort: int(port.HostPort + i),
+					ChildPort:  int(port.ContainerPort + i),
+					ChildIP:    childIP,
+				}
+
+				for _, spec = range splitDualStackSpecIfWsl(spec) {
+					if err := validateAndAddPort(ctx, pm, spec); err != nil {
+						return err
+					}
+				}
+			}
 		}
 	}
+	return nil
+}
+
+func validateAndAddPort(ctx context.Context, pm rkport.Manager, spec rkport.Spec) error {
+	if err := rkportutil.ValidatePortSpec(spec, nil); err != nil {
+		return err
+	}
+	if _, err := pm.AddPort(ctx, spec); err != nil {
+		return err
+	}
+
 	return nil
 }
 

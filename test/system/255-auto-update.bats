@@ -178,9 +178,8 @@ function _confirm_update() {
     is "$output" "$oldID" "container rolled back to previous image"
 
     run_podman container inspect --format "{{.ID}}" $cname
-    if [[ $output == $containerID ]]; then
-        die "container has not been restarted during rollback (previous id: $containerID, current id: $output)"
-    fi
+    assert "$output" != "$containerID" \
+           "container has not been restarted during rollback"
 }
 
 @test "podman auto-update - label io.containers.autoupdate=disabled" {
@@ -329,11 +328,9 @@ EOF
     for cname in "${cnames[@]}"; do
         run_podman inspect --format "{{.Image}}" $cname
         if [[ -n "${expect_update[$cname]}" ]]; then
-            if [[ "$output" == "$img_id" ]]; then
-                die "$cname: image ID ($output) did not change"
-            fi
+            assert "$output" != "$img_id" "$cname: image ID did not change"
         else
-            is "$output" "$img_id" "Image should not be changed."
+            assert "$output" = "$img_id" "Image ID should not be changed."
         fi
     done
 }
@@ -366,15 +363,17 @@ Type=oneshot
 ExecStart=/usr/bin/podman auto-update
 
 [Install]
-WantedBy=multi-user.target default.target
+WantedBy=default.target
 EOF
 
     echo "podman-auto-update-$cname" >> $SNAME_FILE
     systemctl enable --now podman-auto-update-$cname.timer
     systemctl list-timers --all
 
-    # While systemd v245 and later uses 'Finished', older versions uses 'Started' for oneshot services
-    local expect='(Finished|Started) Podman auto-update testing service'
+    # systemd       <245 displays 'Started Podman auto-update ...'
+    # systemd 245 - <250 displays 'Finished Podman auto-update ...'
+    # systemd 250 - ???? displays 'Finished <unit name> - Podman auto-...'
+    local expect='(Started|Finished.*) Podman auto-update testing service'
     local failed_start=failed
     local count=0
     while [ $count -lt 120 ]; do

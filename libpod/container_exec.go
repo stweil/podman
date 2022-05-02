@@ -9,11 +9,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/libpod/events"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/libpod/events"
 	"github.com/containers/storage/pkg/stringid"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 // ExecConfig contains the configuration of an exec session
@@ -78,11 +79,11 @@ type ExecConfig struct {
 type ExecSession struct {
 	// Id is the ID of the exec session.
 	// Named somewhat strangely to not conflict with ID().
-	// nolint:stylecheck,golint
+	// nolint:stylecheck,revive
 	Id string `json:"id"`
 	// ContainerId is the ID of the container this exec session belongs to.
 	// Named somewhat strangely to not conflict with ContainerID().
-	// nolint:stylecheck,golint
+	// nolint:stylecheck,revive
 	ContainerId string `json:"containerId"`
 
 	// State is the state of the exec session.
@@ -340,22 +341,60 @@ func (c *Container) ExecStartAndAttach(sessionID string, streams *define.AttachS
 	}
 	lastErr = tmpErr
 
-	exitCode, err := c.readExecExitCode(session.ID())
-	if err != nil {
+	exitCode, exitCodeErr := c.readExecExitCode(session.ID())
+
+	// Lock again.
+	// Important: we must lock and sync *before* the above error is handled.
+	// We need info from the database to handle the error.
+	if !c.batched {
+		c.lock.Lock()
+	}
+	// We can't reuse the old exec session (things may have changed from
+	// other use, the container was unlocked).
+	// So re-sync and get a fresh copy.
+	// If we can't do this, no point in continuing, any attempt to save
+	// would write garbage to the DB.
+	if err := c.syncContainer(); err != nil {
+		if errors.Is(err, define.ErrNoSuchCtr) || errors.Is(err, define.ErrCtrRemoved) {
+			// We can't save status, but since the container has
+			// been entirely removed, we don't have to; exit cleanly
+			return lastErr
+		}
 		if lastErr != nil {
 			logrus.Errorf("Container %s exec session %s error: %v", c.ID(), session.ID(), lastErr)
 		}
-		lastErr = err
+		return errors.Wrapf(err, "error syncing container %s state to update exec session %s", c.ID(), sessionID)
+	}
+
+	// Now handle the error from readExecExitCode above.
+	if exitCodeErr != nil {
+		newSess, ok := c.state.ExecSessions[sessionID]
+		if !ok {
+			// The exec session was removed entirely, probably by
+			// the cleanup process. When it did so, it should have
+			// written an event with the exit code.
+			// Given that, there's nothing more we can do.
+			logrus.Infof("Container %s exec session %s already removed", c.ID(), session.ID())
+			return lastErr
+		}
+
+		if newSess.State == define.ExecStateStopped {
+			// Exec session already cleaned up.
+			// Exit code should be recorded, so it's OK if we were
+			// not able to read it.
+			logrus.Infof("Container %s exec session %s already cleaned up", c.ID(), session.ID())
+			return lastErr
+		}
+
+		if lastErr != nil {
+			logrus.Errorf("Container %s exec session %s error: %v", c.ID(), session.ID(), lastErr)
+		}
+		lastErr = exitCodeErr
 	}
 
 	logrus.Debugf("Container %s exec session %s completed with exit code %d", c.ID(), session.ID(), exitCode)
 
-	// Lock again
-	if !c.batched {
-		c.lock.Lock()
-	}
-
-	if err := writeExecExitCode(c, session.ID(), exitCode); err != nil {
+	if err := justWriteExecExitCode(c, session.ID(), exitCode); err != nil {
 		if lastErr != nil {
 			logrus.Errorf("Container %s exec session %s error: %v", c.ID(), session.ID(), lastErr)
 		}
@@ -774,13 +813,40 @@ func (c *Container) Exec(config *ExecConfig, streams *define.AttachStreams, resi
 	return exitCode, nil
 }
 
-// cleanup an exec session after its done
-func (c *Container) cleanupExecBundle(sessionID string) error {
-	if err := os.RemoveAll(c.execBundlePath(sessionID)); err != nil && !os.IsNotExist(err) {
-		return err
+// cleanupExecBundle cleanups an exec session after its done
+// Please be careful when using this function since it might temporarily unlock
+// the container when os.RemoveAll($bundlePath) fails with ENOTEMPTY or EBUSY
+// errors.
+func (c *Container) cleanupExecBundle(sessionID string) (err error) {
+	path := c.execBundlePath(sessionID)
+	for attempts := 0; attempts < 50; attempts++ {
+		err = os.RemoveAll(path)
+		if err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		if pathErr, ok := err.(*os.PathError); ok {
+			err = pathErr.Err
+			if errors.Cause(err) == unix.ENOTEMPTY || errors.Cause(err) == unix.EBUSY {
+				// give other processes a chance to use the container
+				if !c.batched {
+					if err := c.save(); err != nil {
+						return err
+					}
+					c.lock.Unlock()
+				}
+				time.Sleep(time.Millisecond * 100)
+				if !c.batched {
+					c.lock.Lock()
+					if err := c.syncContainer(); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+		}
+		return
 	}
-
-	return nil
+	return
 }
 
 // the path to a containers exec session bundle

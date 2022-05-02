@@ -6,9 +6,22 @@
 load helpers
 
 @test "podman kill - test signal handling in containers" {
+
+    # Prepare for 'logs -f'
+    run_podman info --format '{{.Host.LogDriver}}'
+    log_driver=$output
+    run_podman info --format '{{.Host.EventLogger}}'
+    event_logger=$output
+    opt_log_driver=
+    if [ $log_driver = "journald" ] && [ $event_logger != "journald" ]; then
+        # Since PR#10431, 'logs -f' with journald driver is only supported with journald events backend.
+        # Set '--log driver' temporally because remote doesn't support '--events-backend'.
+        opt_log_driver="--log-driver k8s-file"
+    fi
+
     # Start a container that will handle all signals by emitting 'got: N'
     local -a signals=(1 2 3 4 5 6 8 10 12 13 14 15 16 20 21 22 23 24 25 26 64)
-    run_podman run -d $IMAGE sh -c \
+    run_podman run -d ${opt_log_driver} $IMAGE sh -c \
         "for i in ${signals[*]}; do trap \"echo got: \$i\" \$i; done;
         echo READY;
         while ! test -e /stop; do sleep 0.05; done;
@@ -101,6 +114,20 @@ load helpers
     # 'podman create' uses the same parsing code
     run_podman 125 create --stop-signal=99 $IMAGE
     is "$output" "Error: valid signals are 1 through 64" "podman create"
+}
+
+@test "podman kill - print IDs or raw input" {
+    # kill -a must print the IDs
+    run_podman run --rm -d $IMAGE top
+    ctrID="$output"
+    run_podman kill -a
+    is "$output" "$ctrID"
+
+    # kill $input must print $input
+    cname=$(random_string)
+    run_podman run --rm -d --name $cname $IMAGE top
+    run_podman kill $cname
+    is "$output" $cname
 }
 
 # vim: filetype=sh

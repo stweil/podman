@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/containers/podman/v3/libpod"
-	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v4/libpod"
+	"github.com/containers/podman/v4/libpod/define"
 	units "github.com/docker/go-units"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -73,6 +73,11 @@ func VolumeOptions(opts map[string]string) ([]libpod.VolumeCreateOption, error) 
 					finalVal = append(finalVal, o)
 					// set option "GID": "$gid"
 					volumeOptions["GID"] = splitO[1]
+				case "noquota":
+					logrus.Debugf("Removing noquota from options and adding WithVolumeDisableQuota")
+					libpodOptions = append(libpodOptions, libpod.WithVolumeDisableQuota())
+					// set option "NOQUOTA": "true"
+					volumeOptions["NOQUOTA"] = "true"
 				default:
 					finalVal = append(finalVal, o)
 				}

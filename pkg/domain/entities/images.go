@@ -7,8 +7,8 @@ import (
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/manifest"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v3/pkg/inspect"
-	"github.com/containers/podman/v3/pkg/trust"
+	"github.com/containers/podman/v4/pkg/inspect"
+	"github.com/containers/podman/v4/pkg/trust"
 	"github.com/docker/docker/api/types/container"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -50,6 +50,7 @@ func (i *Image) Id() string { // nolint
 	return i.ID
 }
 
+// swagger:model LibpodImageSummary
 type ImageSummary struct {
 	ID          string `json:"Id"`
 	ParentId    string // nolint
@@ -89,11 +90,13 @@ type ImageRemoveOptions struct {
 	All bool
 	// Foce will force image removal including containers using the images.
 	Force bool
+	// Ignore if a specified image does not exist and do not throw an error.
+	Ignore bool
 	// Confirms if given name is a manifest list and removes it, otherwise returns error.
 	LookupManifest bool
 }
 
-// ImageRemoveResponse is the response for removing one or more image(s) from storage
+// ImageRemoveReport is the response for removing one or more image(s) from storage
 // and images what was untagged vs actually removed.
 type ImageRemoveReport struct {
 	// Deleted images.
@@ -207,6 +210,8 @@ type ImagePushOptions struct {
 	SkipTLSVerify types.OptionalBool
 	// Progress to get progress notifications
 	Progress chan types.ProgressProperties
+	// CompressionFormat is the format to use for the compression of the blobs
+	CompressionFormat string
 }
 
 // ImageSearchOptions are the arguments for searching images.
@@ -274,6 +279,7 @@ type ImageLoadReport struct {
 
 type ImageImportOptions struct {
 	Architecture    string
+	Variant         string
 	Changes         []string
 	Message         string
 	OS              string
@@ -308,26 +314,28 @@ type ImageSaveOptions struct {
 	Quiet bool
 }
 
-// ImageScpOptions provide options for securely copying images to podman remote
+// ImageScpOptions provide options for securely copying images to and from a remote host
 type ImageScpOptions struct {
-	// SoureImageName is the image the user is providing to load on a remote machine
-	SourceImageName string
-	// Tag allows for a new image to be created under the given name
-	Tag string
-	// ToRemote specifies that we are loading to the remote host
-	ToRemote bool
-	// FromRemote specifies that we are loading from the remote host
-	FromRemote bool
+	// Remote determines if this entity is operating on a remote machine
+	Remote bool `json:"remote,omitempty"`
+	// File is the input/output file for the save and load Operation
+	File string `json:"file,omitempty"`
+	// Quiet Determines if the save and load operation will be done quietly
+	Quiet bool `json:"quiet,omitempty"`
+	// Image is the image the user is providing to save and load
+	Image string `json:"image,omitempty"`
+	// User is used in conjunction with Transfer to determine if a valid user was given to save from/load into
+	User string `json:"user,omitempty"`
+}
+
+// ImageScpConnections provides the ssh related information used in remote image transfer
+type ImageScpConnections struct {
 	// Connections holds the raw string values for connections (ssh or unix)
 	Connections []string
 	// URI contains the ssh connection URLs to be used by the client
 	URI []*url.URL
-	// Iden contains ssh identity keys to be used by the client
-	Iden []string
-	// Save Options used for first half of the scp operation
-	Save ImageSaveOptions
-	// Load options used for the second half of the scp operation
-	Load ImageLoadOptions
+	// Identities contains ssh identity keys to be used by the client
+	Identities []string
 }
 
 // ImageTreeOptions provides options for ImageEngine.Tree()
@@ -368,6 +376,7 @@ type SignOptions struct {
 	Directory string
 	SignBy    string
 	CertDir   string
+	Authfile  string
 	All       bool
 }
 

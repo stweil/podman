@@ -1,11 +1,11 @@
 package volumes
 
 import (
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/inspect"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/domain/entities"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/inspect"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -41,7 +41,7 @@ func init() {
 
 	formatFlagName := "format"
 	flags.StringVarP(&inspectOpts.Format, formatFlagName, "f", "json", "Format volume output using Go template")
-	_ = inspectCommand.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(define.InspectVolumeData{}))
+	_ = inspectCommand.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(&define.InspectVolumeData{}))
 }
 
 func volumeInspect(cmd *cobra.Command, args []string) error {

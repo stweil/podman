@@ -31,11 +31,11 @@ podman pause 860a4b23
 
 Pause all **running** containers.
 ```
-podman stop -a
+podman pause -a
 ```
 
 ## SEE ALSO
-podman(1), podman-unpause(1)
+**[podman(1)](podman.1.md)**, **[podman-unpause(1)](podman-unpause.1.md)**
 
 ## HISTORY
 September 2017, Originally compiled by Dan Walsh <dwalsh@redhat.com>

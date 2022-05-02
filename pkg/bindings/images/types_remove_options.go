@@ -4,7 +4,7 @@ package images
 import (
 	"net/url"
 
-	"github.com/containers/podman/v3/pkg/bindings/internal/util"
+	"github.com/containers/podman/v4/pkg/bindings/internal/util"
 )
 
 // Changed returns true if named field has been set
@@ -45,4 +45,19 @@ func (o *RemoveOptions) GetForce() bool {
 		return z
 	}
 	return *o.Force
+}
+
+// WithIgnore set field Ignore to given value
+func (o *RemoveOptions) WithIgnore(value bool) *RemoveOptions {
+	o.Ignore = &value
+	return o
+}
+
+// GetIgnore returns value of field Ignore
+func (o *RemoveOptions) GetIgnore() bool {
+	if o.Ignore == nil {
+		var z bool
+		return z
+	}
+	return *o.Ignore
 }

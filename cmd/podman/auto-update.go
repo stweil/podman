@@ -9,10 +9,10 @@ import (
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/errorhandling"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/errorhandling"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -57,7 +57,7 @@ func init() {
 	flags.BoolVar(&autoUpdateOptions.Rollback, "rollback", true, "Rollback to previous image if update fails")
 
 	flags.StringVar(&autoUpdateOptions.format, "format", "", "Change the output format to JSON or a Go template")
-	_ = autoUpdateCommand.RegisterFlagCompletionFunc("format", common.AutocompleteFormat(autoUpdateOutput{}))
+	_ = autoUpdateCommand.RegisterFlagCompletionFunc("format", common.AutocompleteFormat(&autoUpdateOutput{}))
 }
 
 func autoUpdate(cmd *cobra.Command, args []string) error {

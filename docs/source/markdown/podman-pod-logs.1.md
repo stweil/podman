@@ -13,6 +13,10 @@ Note: Long running command of `podman pod log` with a `-f` or `--follow` needs t
 
 ## OPTIONS
 
+#### **--color**
+
+Output the containers with different colors in the log.
+
 #### **--container**, **-c**
 
 By default `podman pod logs` retrieves logs for all the containers available within the pod differentiate by field `container`. However there are use-cases where user would want to limit the log stream only to a particular container of a pod for such cases `-c` can be used like `podman pod logs -c ctrNameorID podname`.
@@ -22,11 +26,15 @@ By default `podman pod logs` retrieves logs for all the containers available wit
 Follow log output.  Default is false.
 
 Note: If you are following a pod which is removed `podman pod rm`, then there is a
-chance the the log file will be removed before `podman pod logs` reads the final content.
+chance that the log file will be removed before `podman pod logs` reads the final content.
 
 #### **--latest**, **-l**
 
-Instead of providing the pod name or id, get logs of the last created pod. (This option is not available with the remote Podman client)
+Instead of providing the pod name or id, get logs of the last created pod. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
+
+#### **--names**, **-n**
+
+Output the container names instead of the container IDs in the log.
 
 #### **--since**=*TIMESTAMP*
 
@@ -34,14 +42,6 @@ Show logs since TIMESTAMP. The --since option can be Unix timestamps, date forma
 strings (e.g. 10m, 1h30m) computed relative to the client machine's time. Supported formats for date formatted
 time stamps include RFC3339Nano, RFC3339, 2006-01-02T15:04:05, 2006-01-02T15:04:05.999999999, 2006-01-02Z07:00,
 and 2006-01-02.
-
-#### **--until**=*TIMESTAMP*
-
-Show logs until TIMESTAMP. The --until option can be Unix timestamps, date formatted timestamps, or Go duration
-strings (e.g. 10m, 1h30m) computed relative to the client machine's time. Supported formats for date formatted
-time stamps include RFC3339Nano, RFC3339, 2006-01-02T15:04:05, 2006-01-02T15:04:05.999999999, 2006-01-02Z07:00,
-and 2006-01-02.
-
 
 #### **--tail**=*LINES*
 
@@ -51,6 +51,13 @@ which prints all lines
 #### **--timestamps**, **-t**
 
 Show timestamps in the log outputs.  The default is false
+
+#### **--until**=*TIMESTAMP*
+
+Show logs until TIMESTAMP. The --until option can be Unix timestamps, date formatted timestamps, or Go duration
+strings (e.g. 10m, 1h30m) computed relative to the client machine's time. Supported formats for date formatted
+time stamps include RFC3339Nano, RFC3339, 2006-01-02T15:04:05, 2006-01-02T15:04:05.999999999, 2006-01-02Z07:00,
+and 2006-01-02.
 
 ## EXAMPLE
 
@@ -85,4 +92,4 @@ podman pod logs --until 30m myserver-pod-1
 ```
 
 ## SEE ALSO
-podman(1), podman-pod-start(1), podman-pod-rm(1), podman-logs(1)
+**[podman(1)](podman.1.md)**, **[podman-pod(1)](podman-pod.1.md)**, **[podman-pod-rm(1)](podman-pod-rm.1.md)**, **[podman-logs(1)](podman-logs.1.md)**

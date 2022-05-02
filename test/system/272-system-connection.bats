@@ -34,10 +34,7 @@ function teardown() {
         | xargs -l1 --no-run-if-empty umount
 
     # Remove all system connections
-    run_podman system connection ls --format json
-    while read name; do
-        run_podman system connection rm "$name"
-    done < <(jq -r '.[].Name' <<<"$output")
+    run_podman system connection rm --all
 
     basic_teardown
 }
@@ -53,7 +50,8 @@ function _run_podman_remote() {
 # Very basic test, does not actually connect at any time
 @test "podman system connection - basic add / ls / remove" {
     run_podman system connection ls
-    is "$output" "" "system connection ls: no connections"
+    is "$output" "Name        URI         Identity    Default" \
+       "system connection ls: no connections"
 
     c1="c1_$(random_string 15)"
     c2="c2_$(random_string 15)"
@@ -126,10 +124,14 @@ $c2[ ]\+tcp://localhost:54321[ ]\+true" \
 
 # If we have ssh access to localhost (unlikely in CI), test that.
 @test "podman system connection - ssh" {
-    rand=$(random_string 20)
-    echo $rand >$PODMAN_TMPDIR/testfile
+    # system connection only really works if we have an agent
+    run ssh-add -l
+    test "$status"      -eq 0 || skip "Not running under ssh-agent"
+    test "${#lines[@]}" -ge 1 || skip "ssh agent has no identities"
 
     # Can we actually ssh to localhost?
+    rand=$(random_string 20)
+    echo $rand >$PODMAN_TMPDIR/testfile
     run ssh -q -o BatchMode=yes \
         -o UserKnownHostsFile=/dev/null \
         -o StrictHostKeyChecking=no \

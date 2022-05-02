@@ -12,11 +12,35 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/containers/storage/pkg/parsers/kernel"
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gexec"
+	. "github.com/onsi/ginkgo"       //nolint:revive,stylecheck
+	. "github.com/onsi/gomega"       //nolint:revive,stylecheck
+	. "github.com/onsi/gomega/gexec" //nolint:revive,stylecheck
 )
+
+type NetworkBackend int
+
+const (
+	// Container Networking backend
+	CNI NetworkBackend = iota
+	// Netavark network backend
+	Netavark NetworkBackend = iota
+	// Env variable for creating time files.
+	EnvTimeDir = "_PODMAN_TIME_DIR"
+)
+
+func (n NetworkBackend) ToString() string {
+	switch n {
+	case CNI:
+		return "cni"
+	case Netavark:
+		return "netavark"
+	}
+	logrus.Errorf("unknown network backend: %q", n)
+	return ""
+}
 
 var (
 	DefaultWaitTimeout   = 90
@@ -34,17 +58,18 @@ type PodmanTestCommon interface {
 
 // PodmanTest struct for command line options
 type PodmanTest struct {
-	PodmanMakeOptions  func(args []string, noEvents, noCache bool) []string
+	ImageCacheDir      string
+	ImageCacheFS       string
+	NetworkBackend     NetworkBackend
 	PodmanBinary       string
-	ArtifactPath       string
-	TempDir            string
-	RemoteTest         bool
+	PodmanMakeOptions  func(args []string, noEvents, noCache bool) []string
+	RemoteCommand      *exec.Cmd
 	RemotePodmanBinary string
 	RemoteSession      *os.Process
 	RemoteSocket       string
-	RemoteCommand      *exec.Cmd
-	ImageCacheDir      string
-	ImageCacheFS       string
+	RemoteSocketLock   string // If not "", should be removed _after_ RemoteSocket is removed
+	RemoteTest         bool
+	TempDir            string
 }
 
 // PodmanSession wraps the gexec.session so we can extend it
@@ -66,27 +91,42 @@ func (p *PodmanTest) MakeOptions(args []string, noEvents, noCache bool) []string
 
 // PodmanAsUserBase exec podman as user. uid and gid is set for credentials usage. env is used
 // to record the env for debugging
-func (p *PodmanTest) PodmanAsUserBase(args []string, uid, gid uint32, cwd string, env []string, noEvents, noCache bool, extraFiles []*os.File) *PodmanSession {
+func (p *PodmanTest) PodmanAsUserBase(args []string, uid, gid uint32, cwd string, env []string, noEvents, noCache bool, wrapper []string, extraFiles []*os.File) *PodmanSession {
 	var command *exec.Cmd
 	podmanOptions := p.MakeOptions(args, noEvents, noCache)
 	podmanBinary := p.PodmanBinary
 	if p.RemoteTest {
 		podmanBinary = p.RemotePodmanBinary
 	}
-	if p.RemoteTest {
-		podmanOptions = append([]string{"--remote", "--url", p.RemoteSocket}, podmanOptions...)
+
+	if timeDir := os.Getenv(EnvTimeDir); timeDir != "" {
+		timeFile, err := ioutil.TempFile(timeDir, ".time")
+		if err != nil {
+			Fail(fmt.Sprintf("Error creating time file: %v", err))
+		}
+		timeArgs := []string{"-f", "%M", "-o", timeFile.Name()}
+		timeCmd := append([]string{"/usr/bin/time"}, timeArgs...)
+		wrapper = append(timeCmd, wrapper...)
 	}
+	runCmd := wrapper
+	runCmd = append(runCmd, podmanBinary)
+	if !p.RemoteTest && p.NetworkBackend == Netavark {
+		runCmd = append(runCmd, []string{"--network-backend", "netavark"}...)
+	}
+
 	if env == nil {
-		fmt.Printf("Running: %s %s\n", podmanBinary, strings.Join(podmanOptions, " "))
+		fmt.Printf("Running: %s %s\n", strings.Join(runCmd, " "), strings.Join(podmanOptions, " "))
 	} else {
-		fmt.Printf("Running: (env: %v) %s %s\n", env, podmanBinary, strings.Join(podmanOptions, " "))
+		fmt.Printf("Running: (env: %v) %s %s\n", env, strings.Join(runCmd, " "), strings.Join(podmanOptions, " "))
 	}
 	if uid != 0 || gid != 0 {
 		pythonCmd := fmt.Sprintf("import os; import sys; uid = %d; gid = %d; cwd = '%s'; os.setgid(gid); os.setuid(uid); os.chdir(cwd) if len(cwd)>0 else True; os.execv(sys.argv[1], sys.argv[1:])", gid, uid, cwd)
-		nsEnterOpts := append([]string{"-c", pythonCmd, podmanBinary}, podmanOptions...)
+		runCmd = append(runCmd, podmanOptions...)
+		nsEnterOpts := append([]string{"-c", pythonCmd}, runCmd...)
 		command = exec.Command("python", nsEnterOpts...)
 	} else {
-		command = exec.Command(podmanBinary, podmanOptions...)
+		runCmd = append(runCmd, podmanOptions...)
+		command = exec.Command(runCmd[0], runCmd[1:]...)
 	}
 	if env != nil {
 		command.Env = env
@@ -106,7 +146,7 @@ func (p *PodmanTest) PodmanAsUserBase(args []string, uid, gid uint32, cwd string
 
 // PodmanBase exec podman with default env.
 func (p *PodmanTest) PodmanBase(args []string, noEvents, noCache bool) *PodmanSession {
-	return p.PodmanAsUserBase(args, 0, 0, "", nil, noEvents, noCache, nil)
+	return p.PodmanAsUserBase(args, 0, 0, "", nil, noEvents, noCache, nil, nil)
 }
 
 // WaitForContainer waits on a started container
@@ -117,6 +157,7 @@ func (p *PodmanTest) WaitForContainer() bool {
 		}
 		time.Sleep(1 * time.Second)
 	}
+	fmt.Printf("WaitForContainer(): timed out\n")
 	return false
 }
 
@@ -338,6 +379,7 @@ func CreateTempDirInTempDir() (string, error) {
 // SystemExec is used to exec a system command to check its exit code or output
 func SystemExec(command string, args []string) *PodmanSession {
 	c := exec.Command(command, args...)
+	fmt.Println("Execing " + c.String() + "\n")
 	session, err := Start(c, GinkgoWriter, GinkgoWriter)
 	if err != nil {
 		Fail(fmt.Sprintf("unable to run command: %s %s", command, strings.Join(args, " ")))
@@ -349,6 +391,7 @@ func SystemExec(command string, args []string) *PodmanSession {
 // StartSystemExec is used to start exec a system command
 func StartSystemExec(command string, args []string) *PodmanSession {
 	c := exec.Command(command, args...)
+	fmt.Println("Execing " + c.String() + "\n")
 	session, err := Start(c, GinkgoWriter, GinkgoWriter)
 	if err != nil {
 		Fail(fmt.Sprintf("unable to run command: %s %s", command, strings.Join(args, " ")))
@@ -393,23 +436,23 @@ func tagOutputToMap(imagesOutput []string) map[string]map[string]bool {
 	return m
 }
 
-// GetHostDistributionInfo returns a struct with its distribution name and version
+// GetHostDistributionInfo returns a struct with its distribution Name and version
 func GetHostDistributionInfo() HostOS {
 	f, err := os.Open(OSReleasePath)
-	defer f.Close()
 	if err != nil {
 		return HostOS{}
 	}
+	defer f.Close()
 
 	l := bufio.NewScanner(f)
 	host := HostOS{}
 	host.Arch = runtime.GOARCH
 	for l.Scan() {
 		if strings.HasPrefix(l.Text(), "ID=") {
-			host.Distribution = strings.Replace(strings.TrimSpace(strings.Join(strings.Split(l.Text(), "=")[1:], "")), "\"", "", -1)
+			host.Distribution = strings.ReplaceAll(strings.TrimSpace(strings.Join(strings.Split(l.Text(), "=")[1:], "")), "\"", "")
 		}
 		if strings.HasPrefix(l.Text(), "VERSION_ID=") {
-			host.Version = strings.Replace(strings.TrimSpace(strings.Join(strings.Split(l.Text(), "=")[1:], "")), "\"", "", -1)
+			host.Version = strings.ReplaceAll(strings.TrimSpace(strings.Join(strings.Split(l.Text(), "=")[1:], "")), "\"", "")
 		}
 	}
 	return host
@@ -434,25 +477,26 @@ func IsKernelNewerThan(version string) (bool, error) {
 		return true, nil
 	}
 	return false, nil
-
 }
 
 // IsCommandAvailable check if command exist
 func IsCommandAvailable(command string) bool {
 	check := exec.Command("bash", "-c", strings.Join([]string{"command -v", command}, " "))
 	err := check.Run()
-	if err != nil {
-		return false
-	}
-	return true
+	return err == nil
 }
 
-// WriteJsonFile write json format data to a json file
-func WriteJsonFile(data []byte, filePath string) error {
+// WriteJSONFile write json format data to a json file
+func WriteJSONFile(data []byte, filePath string) error {
 	var jsonData map[string]interface{}
-	json.Unmarshal(data, &jsonData)
-	formatJson, _ := json.MarshalIndent(jsonData, "", "	")
-	return ioutil.WriteFile(filePath, formatJson, 0644)
+	if err := json.Unmarshal(data, &jsonData); err != nil {
+		return err
+	}
+	formatJSON, err := json.MarshalIndent(jsonData, "", "	")
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(filePath, formatJSON, 0644)
 }
 
 // Containerized check the podman command run inside container
@@ -466,34 +510,16 @@ func Containerized() bool {
 		// shrug, if we cannot read that file, return false
 		return false
 	}
-	if strings.Index(string(b), "docker") > -1 {
-		return true
-	}
-	return false
-}
-
-func init() {
-	rand.Seed(GinkgoRandomSeed())
+	return strings.Contains(string(b), "docker")
 }
 
 var randomLetters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 // RandomString returns a string of given length composed of random characters
 func RandomString(n int) string {
-
 	b := make([]rune, n)
 	for i := range b {
 		b[i] = randomLetters[rand.Intn(len(randomLetters))]
 	}
 	return string(b)
-}
-
-//SkipIfInContainer skips a test if the test is run inside a container
-func SkipIfInContainer(reason string) {
-	if len(reason) < 5 {
-		panic("SkipIfInContainer must specify a reason to skip")
-	}
-	if os.Getenv("TEST_ENVIRON") == "container" {
-		Skip("[container]: " + reason)
-	}
 }

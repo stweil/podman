@@ -1,18 +1,22 @@
+//go:build linux
 // +build linux
 
 package libpod
 
 import (
+	"math"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/cgroups"
+	"github.com/containers/common/pkg/cgroups"
+	"github.com/containers/podman/v4/libpod/define"
 	"github.com/pkg/errors"
 )
 
-// GetContainerStats gets the running stats for a given container
+// GetContainerStats gets the running stats for a given container.
+// The previousStats is used to correctly calculate cpu percentages. You
+// should pass nil if there is no previous stat for this container.
 func (c *Container) GetContainerStats(previousStats *define.ContainerStats) (*define.ContainerStats, error) {
 	stats := new(define.ContainerStats)
 	stats.ContainerID = c.ID()
@@ -32,6 +36,14 @@ func (c *Container) GetContainerStats(previousStats *define.ContainerStats) (*de
 
 	if c.state.State != define.ContainerStateRunning && c.state.State != define.ContainerStatePaused {
 		return stats, define.ErrCtrStateInvalid
+	}
+
+	if previousStats == nil {
+		previousStats = &define.ContainerStats{
+			// if we have no prev stats use the container start time as prev time
+			// otherwise we cannot correctly calculate the CPU percentage
+			SystemNano: uint64(c.state.StartedTime.UnixNano()),
+		}
 	}
 
 	cgroupPath, err := c.cGroupPath()
@@ -65,10 +77,10 @@ func (c *Container) GetContainerStats(previousStats *define.ContainerStats) (*de
 	stats.Duration = cgroupStats.CPU.Usage.Total
 	stats.UpTime = time.Duration(stats.Duration)
 	stats.CPU = calculateCPUPercent(cgroupStats, previousCPU, now, previousStats.SystemNano)
-	stats.AvgCPU = calculateAvgCPU(stats.CPU, previousStats.AvgCPU, previousStats.DataPoints)
-	stats.DataPoints = previousStats.DataPoints + 1
+	// calc the average cpu usage for the time the container is running
+	stats.AvgCPU = calculateCPUPercent(cgroupStats, 0, now, uint64(c.state.StartedTime.UnixNano()))
 	stats.MemUsage = cgroupStats.Memory.Usage.Usage
-	stats.MemLimit = getMemLimit(cgroupStats.Memory.Usage.Limit)
+	stats.MemLimit = c.getMemLimit()
 	stats.MemPerc = (float64(stats.MemUsage) / float64(stats.MemLimit)) * 100
 	stats.PIDs = 0
 	if conState == define.ContainerStateRunning || conState == define.ContainerStatePaused {
@@ -91,22 +103,29 @@ func (c *Container) GetContainerStats(previousStats *define.ContainerStats) (*de
 	return stats, nil
 }
 
-// getMemory limit returns the memory limit for a given cgroup
-// If the configured memory limit is larger than the total memory on the sys, the
-// physical system memory size is returned
-func getMemLimit(cgroupLimit uint64) uint64 {
+// getMemory limit returns the memory limit for a container
+func (c *Container) getMemLimit() uint64 {
+	memLimit := uint64(math.MaxUint64)
+
+	if c.config.Spec.Linux != nil && c.config.Spec.Linux.Resources != nil &&
+		c.config.Spec.Linux.Resources.Memory != nil && c.config.Spec.Linux.Resources.Memory.Limit != nil {
+		memLimit = uint64(*c.config.Spec.Linux.Resources.Memory.Limit)
+	}
+
 	si := &syscall.Sysinfo_t{}
 	err := syscall.Sysinfo(si)
 	if err != nil {
-		return cgroupLimit
+		return memLimit
 	}
 
 	//nolint:unconvert
 	physicalLimit := uint64(si.Totalram)
-	if cgroupLimit > physicalLimit {
+
+	if memLimit <= 0 || memLimit > physicalLimit {
 		return physicalLimit
 	}
-	return cgroupLimit
+
+	return memLimit
 }
 
 // calculateCPUPercent calculates the cpu usage using the latest measurement in stats.
@@ -136,10 +155,4 @@ func calculateBlockIO(stats *cgroups.Metrics) (read uint64, write uint64) {
 		}
 	}
 	return
-}
-
-// calculateAvgCPU calculates the avg CPU percentage given the previous average and the number of data points.
-func calculateAvgCPU(statsCPU float64, prevAvg float64, prevData int64) float64 {
-	avgPer := ((prevAvg * float64(prevData)) + statsCPU) / (float64(prevData) + 1)
-	return avgPer
 }

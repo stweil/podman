@@ -112,6 +112,7 @@ function skip_if_remote() {
 
 ###############################################################################
 # BEGIN differences in error messages between buildah and podman
+
 errmsg "non-directory/Dockerfile: not a directory" \
        "Error: context must be a directory:" \
        "bud with a path to a Dockerfile (-f) containing a non-directory entry"
@@ -136,19 +137,15 @@ errmsg "no such file or directory" \
 ###############################################################################
 # BEGIN tests that don't make sense under podman due to fundamental differences
 
-skip "N/A under podman" \
-     "bud-flags-order-verification"
+# TODO
+# Normally, when buildah exits 1 on error, podman exits 125.
+# These tests are the exception. They exit 1 under podman.
+skip "these tests exit 1 under podman, not 125" \
+     "bud with --add-host" \
+     "bud - invalid runtime flags test"
 
 skip "does not work under podman" \
      "bud without any arguments should succeed"
-
-skip "podman requires a directory, not a Dockerfile" \
-     "bud with specified context should succeed if context contains existing Dockerfile"
-
-# ...or due to Ed's laziness
-skip "Too much effort to spin up a local registry" \
-     "bud with encrypted FROM image" \
-     "bud --authfile"
 
 # ...or due to a fundamental arg-parsing difference between buildah and podman
 # which we could and perhaps should fix in the buildah repo via:
@@ -160,13 +157,11 @@ skip "FIXME FIXME FIXME: argument-order incompatible with podman" \
 skip "FIXME FIXME FIXME: this passes on Ed's laptop, fails in CI??" \
      "bud-multi-stage-nocache-nocommit"
 
-# This will probably never work: buildah and podman have incompatible defaults
-# Documented in https://github.com/containers/podman/issues/10412
-skip "buildah runs with --cgroup-manager=cgroupfs, podman with systemd" \
-     "bud with --cgroup-parent"
-
 ###############################################################################
 # BEGIN tests which are skipped because they make no sense under podman-remote
+
+skip_if_remote "--runtime-flags does not work with podman-remote" \
+               "bud - invalid runtime flags test"
 
 skip_if_remote "--target does not work with podman-remote" \
                "bud-target"
@@ -177,18 +172,36 @@ skip_if_remote "--runtime not meaningful under podman-remote" \
 skip_if_remote "secret files not implemented under podman-remote" \
                "bud with containerfile secret" \
                "bud with containerfile secret accessed on second RUN" \
-               "bud with containerfile secret options"
+               "bud with containerfile secret options" \
+               "bud with containerfile env secret" \
+               "bud with containerfile env secret priority"
 
 skip_if_remote "volumes don't work with podman-remote" \
                "buildah bud --volume" \
                "buildah-bud-policy"
+
+# Requires a local file outside context dir
+skip_if_remote "local keyfile not sent to podman-remote" \
+               "bud with encrypted FROM image"
 
 # See podman #9890 for discussion
 skip_if_remote "--stdin option will not be implemented in podman-remote" \
                "bud test no --stdin"
 
 ###############################################################################
-# BEGIN tests which are skipped due to actual podman-remote bugs.
+# BEGIN tests which are skipped due to actual podman or podman-remote bugs.
+
+skip_if_remote "Podman #12838: different error messages" \
+               "bud with .dockerignore #2"
+
+# These two tests, new in 2022-01, invoke podman (create, export) in ways
+# that don't work with podman-remote due to the use of --registries-conf
+skip_if_remote "FIXME FIXME FIXME: find a way to clean up their podman calls" \
+               "bud with run should not leave mounts behind cleanup test" \
+               "bud with custom files in /run/ should persist cleanup test"
+
+skip_if_remote "Do envariables work with -remote? Please look into this." \
+               "build proxy"
 
 ###############################################################################
 # Done.

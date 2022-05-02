@@ -1,7 +1,13 @@
+//go:build linux
+// +build linux
+
 package criu
 
 import (
 	"github.com/checkpoint-restore/go-criu/v5"
+	"github.com/checkpoint-restore/go-criu/v5/rpc"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // MinCriuVersion for Podman at least CRIU 3.11 is required
@@ -20,4 +26,26 @@ func CheckForCriu(version int) bool {
 		return false
 	}
 	return result
+}
+
+func GetCriuVestion() (int, error) {
+	c := criu.MakeCriu()
+	return c.GetCriuVersion()
+}
+
+func MemTrack() bool {
+	features, err := criu.MakeCriu().FeatureCheck(
+		&rpc.CriuFeatures{
+			MemTrack: proto.Bool(true),
+		},
+	)
+	if err != nil {
+		return false
+	}
+
+	if features == nil || features.MemTrack == nil {
+		return false
+	}
+
+	return *features.MemTrack
 }

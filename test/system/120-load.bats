@@ -52,9 +52,7 @@ verify_iid_and_name() {
     # which redirects stdout and stderr. Here we need to guarantee
     # that podman's stdout is a pipe, not any other form of redirection
     $PODMAN save --format oci-archive $fqin | cat >$archive
-    if [ "$status" -ne 0 ]; then
-        die "Command failed: podman save ... | cat"
-    fi
+    assert "$?" -eq 0 "Command failed: podman save ... | cat"
 
     # Make sure we can reload it
     run_podman rmi $fqin
@@ -76,6 +74,80 @@ verify_iid_and_name() {
 
     # Clean up
     run_podman rmi $fqin
+}
+
+@test "podman image scp transfer" {
+    skip_if_remote "only applicable under local podman"
+    if is_ubuntu; then
+        skip "I don't have time to deal with this"
+    fi
+
+    # The testing is the same whether we're root or rootless; all that
+    # differs is the destination (not-me) username.
+    if is_rootless; then
+        # Simple: push to root.
+        whoami=$(id -un)
+        notme=root
+        _sudo() { command sudo -n "$@"; }
+    else
+        # Harder: our CI infrastructure needs to define this & set up the acct
+        whoami=root
+        notme=${PODMAN_ROOTLESS_USER}
+        if [[ -z "$notme" ]]; then
+            skip "To run this test, set PODMAN_ROOTLESS_USER to a safe username"
+        fi
+        _sudo() { command sudo -n -u "$notme" "$@"; }
+    fi
+
+    # If we can't sudo, we can't test.
+    _sudo true || skip "cannot sudo to $notme"
+
+    # Preserve digest of original image; we will compare against it later
+    run_podman image inspect --format '{{.Digest}}' $IMAGE
+    src_digest=$output
+
+    # image name that is not likely to exist in the destination
+    newname=foo.bar/nonesuch/c_$(random_string 10 | tr A-Z a-z):mytag
+    run_podman tag $IMAGE $newname
+
+    # Copy it there.
+    run_podman image scp $newname ${notme}@localhost::
+    is "$output" "Copying blob .*Copying config.*Writing manifest.*Storing signatures"
+
+    # confirm that image was copied. FIXME: also try $PODMAN image inspect?
+    _sudo $PODMAN image exists $newname
+
+    # Copy it back, this time using -q
+    run_podman untag $IMAGE $newname
+    run_podman image scp -q ${notme}@localhost::$newname
+
+    expect="Loaded image(s): $newname"
+    is "$output" "$expect" "-q silences output"
+
+    # Confirm that we have it, and that its digest matches our original
+    run_podman image inspect --format '{{.Digest}}' $newname
+    is "$output" "$src_digest" "Digest of re-fetched image matches original"
+
+    # Clean up
+    _sudo $PODMAN image rm $newname
+    run_podman untag $IMAGE $newname
+
+    # Negative test for nonexistent image.
+    # FIXME: error message is 2 lines, the 2nd being "exit status 125".
+    # FIXME: is that fixable, or do we have to live with it?
+    nope="nope.nope/nonesuch:notag"
+    run_podman 125 image scp ${notme}@localhost::$nope
+    is "$output" "Error: $nope: image not known.*" "Pulling nonexistent image"
+
+    run_podman 125 image scp $nope ${notme}@localhost::
+    is "$output" "Error: $nope: image not known.*" "Pushing nonexistent image"
+
+    # Negative test for copying to a different name
+    run_podman 125 image scp $IMAGE ${notme}@localhost::newname:newtag
+    is "$output" "Error: cannot specify an image rename: invalid argument" \
+       "Pushing with a different name: not allowed"
+
+    # FIXME: any point in copying by image ID? What else should we test?
 }
 
 
@@ -126,6 +198,26 @@ verify_iid_and_name() {
     verify_iid_and_name $img_name
 }
 
+@test "podman load - from URL" {
+    get_iid_and_name
+    run_podman save $img_name -o $archive
+    run_podman rmi $iid
+
+    HOST_PORT=$(random_free_port)
+    SERVER=http://127.0.0.1:$HOST_PORT
+
+    # Bind-mount the archive to a container running httpd
+    run_podman run -d --name myweb -p "$HOST_PORT:80" \
+            -v $archive:/var/www/image.tar:Z \
+            -w /var/www \
+            $IMAGE /bin/busybox-extras httpd -f -p 80
+
+    run_podman load -i $SERVER/image.tar
+    verify_iid_and_name $img_name
+
+    run_podman rm -f -t0 myweb
+}
+
 @test "podman load - redirect corrupt payload" {
     run_podman 125 load <<< "Danger, Will Robinson!! This is a corrupt tarball!"
     is "$output" \
@@ -171,9 +263,7 @@ verify_iid_and_name() {
     # which redirects stdout and stderr. Here we need to guarantee
     # that podman's stdout is a pipe, not any other form of redirection
     $PODMAN save -m $img1 $img2 | cat >$archive
-    if [ "$status" -ne 0 ]; then
-        die "Command failed: podman save ... | cat"
-    fi
+    assert "$?" -eq 0 "Command failed: podman save ... | cat"
 
     run_podman rmi -f $img1 $img2
     run_podman load -i $archive
@@ -190,7 +280,7 @@ verify_iid_and_name() {
 
     # Create a tarball, unpack it and make sure the layers are uncompressed.
     run_podman save -o $archive --format oci-archive --uncompressed $IMAGE
-    run tar -C $untar -xvf $archive
+    tar -C $untar -xvf $archive
     run file $untar/blobs/sha256/*
     is "$output" ".*POSIX tar archive" "layers are uncompressed"
 }

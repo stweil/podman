@@ -11,10 +11,10 @@ import (
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/common/pkg/parse"
-	"github.com/containers/podman/v3/libpod"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/specgen"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/podman/v4/libpod"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v4/pkg/util"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -214,9 +214,6 @@ func getImageVolumes(ctx context.Context, img *libimage.Image, s *specgen.SpecGe
 	}
 	for volume := range inspect.Config.Volumes {
 		logrus.Debugf("Image has volume at %q", volume)
-		if err = parse.ValidateVolumeCtrDir(volume); err != nil {
-			return nil, nil, err
-		}
 		cleanDest := filepath.Clean(volume)
 		switch mode {
 		case "", "anonymous":
@@ -295,7 +292,7 @@ func getVolumesFrom(volumesFrom []string, runtime *libpod.Runtime) (map[string]s
 		// and append them in if we can find them.
 		spec := ctr.Spec()
 		if spec == nil {
-			return nil, nil, errors.Errorf("error retrieving container %s spec for volumes-from", ctr.ID())
+			return nil, nil, errors.Errorf("retrieving container %s spec for volumes-from", ctr.ID())
 		}
 		for _, mnt := range spec.Mounts {
 			if mnt.Type != define.TypeBind {

@@ -2,14 +2,15 @@ package generate
 
 import (
 	"fmt"
+	"io/fs"
 	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/rootless"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/rootless"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/pkg/errors"
@@ -45,17 +46,6 @@ func addPrivilegedDevices(g *generate.Generator) error {
 				continue
 			}
 			if _, found := mounts[d.Path]; found {
-				continue
-			}
-			st, err := os.Stat(d.Path)
-			if err != nil {
-				if err == unix.EPERM {
-					continue
-				}
-				return err
-			}
-			// Skip devices that the user has not access to.
-			if st.Mode()&0007 == 0 {
 				continue
 			}
 			newMounts = append(newMounts, devMnt)
@@ -112,8 +102,8 @@ func DevicesFromPath(g *generate.Generator, devicePath string) error {
 		}
 
 		// mount the internal devices recursively
-		if err := filepath.Walk(resolvedDevicePath, func(dpath string, f os.FileInfo, e error) error {
-			if f.Mode()&os.ModeDevice == os.ModeDevice {
+		if err := filepath.WalkDir(resolvedDevicePath, func(dpath string, d fs.DirEntry, e error) error {
+			if d.Type()&os.ModeDevice == os.ModeDevice {
 				found = true
 				device := fmt.Sprintf("%s:%s", dpath, filepath.Join(dest, strings.TrimPrefix(dpath, src)))
 				if devmode != "" {
@@ -273,8 +263,8 @@ func addDevice(g *generate.Generator, device string) error {
 
 // ParseDevice parses device mapping string to a src, dest & permissions string
 func ParseDevice(device string) (string, string, string, error) { //nolint
-	src := ""
-	dst := ""
+	var src string
+	var dst string
 	permissions := "rwm"
 	arr := strings.Split(device, ":")
 	switch len(arr) {

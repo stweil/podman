@@ -3,16 +3,17 @@ package network
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
+	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/cmd/podman/validate"
-	"github.com/containers/podman/v3/libpod/network/types"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/pkg/errors"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/parse"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/cmd/podman/validate"
+	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -39,7 +40,7 @@ var (
 func networkListFlags(flags *pflag.FlagSet) {
 	formatFlagName := "format"
 	flags.StringVar(&networkListOptions.Format, formatFlagName, "", "Pretty-print networks to JSON or using a Go template")
-	_ = networklistCommand.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(ListPrintReports{}))
+	_ = networklistCommand.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(&ListPrintReports{}))
 
 	flags.BoolVarP(&networkListOptions.Quiet, "quiet", "q", false, "display only names")
 	flags.BoolVar(&noTrunc, "no-trunc", false, "Do not truncate the network ID")
@@ -60,18 +61,20 @@ func init() {
 }
 
 func networkList(cmd *cobra.Command, args []string) error {
-	networkListOptions.Filters = make(map[string][]string)
-	for _, f := range filters {
-		split := strings.SplitN(f, "=", 2)
-		if len(split) == 1 {
-			return errors.Errorf("invalid filter %q", f)
-		}
-		networkListOptions.Filters[split[0]] = append(networkListOptions.Filters[split[0]], split[1])
+	var err error
+	networkListOptions.Filters, err = parse.FilterArgumentsIntoFilters(filters)
+	if err != nil {
+		return err
 	}
+
 	responses, err := registry.ContainerEngine().NetworkList(registry.Context(), networkListOptions)
 	if err != nil {
 		return err
 	}
+	// sort the networks to make sure the order is deterministic
+	sort.Slice(responses, func(i, j int) bool {
+		return responses[i].Name < responses[j].Name
+	})
 
 	switch {
 	// quiet means we only print the network names
@@ -84,7 +87,7 @@ func networkList(cmd *cobra.Command, args []string) error {
 
 	// table or other format output
 	default:
-		err = templateOut(responses, cmd)
+		err = templateOut(cmd, responses)
 	}
 
 	return err
@@ -105,7 +108,7 @@ func jsonOut(responses []types.Network) error {
 	return nil
 }
 
-func templateOut(responses []types.Network, cmd *cobra.Command) error {
+func templateOut(cmd *cobra.Command, responses []types.Network) error {
 	nlprs := make([]ListPrintReports, 0, len(responses))
 	for _, r := range responses {
 		nlprs = append(nlprs, ListPrintReports{r})
@@ -120,14 +123,16 @@ func templateOut(responses []types.Network, cmd *cobra.Command) error {
 	})
 
 	renderHeaders := report.HasTable(networkListOptions.Format)
-	var row, format string
-	if cmd.Flags().Changed("format") {
+	var row string
+	switch {
+	case cmd.Flags().Changed("format"):
 		row = report.NormalizeFormat(networkListOptions.Format)
-	} else { // 'podman network ls' equivalent to 'podman network ls --format="table {{.ID}} {{.Name}} {{.Version}} {{.Plugins}}" '
-		renderHeaders = true
+	default:
+		// 'podman network ls' equivalent to 'podman network ls --format="table {{.ID}} {{.Name}} {{.Version}} {{.Plugins}}" '
 		row = "{{.ID}}\t{{.Name}}\t{{.Driver}}\n"
+		renderHeaders = true
 	}
-	format = report.EnforceRange(row)
+	format := report.EnforceRange(row)
 
 	tmpl, err := report.NewTemplate("list").Parse(format)
 	if err != nil {

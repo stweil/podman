@@ -1,16 +1,19 @@
+//go:build linux
 // +build linux
 
 package libpod
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/rootless"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/rootless"
 	"github.com/containers/psgo"
+	"github.com/google/shlex"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -51,7 +54,21 @@ func (c *Container) Top(descriptors []string) ([]string, error) {
 		return nil, psgoErr
 	}
 
-	output, err = c.execPS(descriptors)
+	// Note that the descriptors to ps(1) must be shlexed (see #12452).
+	psDescriptors := []string{}
+	for _, d := range descriptors {
+		shSplit, err := shlex.Split(d)
+		if err != nil {
+			return nil, fmt.Errorf("parsing ps args: %v", err)
+		}
+		for _, s := range shSplit {
+			if s != "" {
+				psDescriptors = append(psDescriptors, s)
+			}
+		}
+	}
+
+	output, err = c.execPS(psDescriptors)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error executing ps(1) in the container")
 	}

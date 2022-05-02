@@ -29,7 +29,7 @@ still be used by other tools when manually preprocessing them via `cpp -E`.
 When the URL is an archive, the contents of the URL is downloaded to a temporary
 location and extracted before execution.
 
-When the URL is an Containerfile, the Containerfile is downloaded to a temporary
+When the URL is a Containerfile, the Containerfile is downloaded to a temporary
 location.
 
 When a Git repository is set as the URL, the repository is cloned locally and
@@ -52,7 +52,11 @@ command to see these containers. External containers can be removed with the
 Add a custom host-to-IP mapping (host:ip)
 
 Add a line to /etc/hosts. The format is hostname:ip. The **--add-host** option
-can be set multiple times.
+can be set multiple times. Conflicts with the --no-hosts option.
+
+#### **--all-platforms**
+
+Instead of building for a set of platforms specified using the **--platform** option, inspect the build's base images, and build for all of the platforms for which they are all available.  Stages that use *scratch* as a starting point can not be inspected, so at least one non-*scratch* stage must be present for detection to work usefully.
 
 #### **--annotation**=*annotation*
 
@@ -90,7 +94,7 @@ resulting image's configuration.
 #### **--cache-from**
 
 Images to utilize as potential cache sources. Podman does not currently support
-caching so this is a NOOP. (This option is not available with the remote Podman client)
+caching so this is a NOOP. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--cap-add**=*CAP\_xxx*
 
@@ -114,8 +118,8 @@ given.
 
 #### **--cert-dir**=*path*
 
-Use certificates at *path* (\*.crt, \*.cert, \*.key) to connect to the registry.
-Please refer to containers-certs.d(5) for details. (This option is not available with the remote Podman client)
+Use certificates at *path* (\*.crt, \*.cert, \*.key) to connect to the registry. (Default: /etc/containers/certs.d)
+Please refer to containers-certs.d(5) for details. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--cgroup-parent**=*path*
 
@@ -123,23 +127,18 @@ Path to cgroups under which the cgroup for the container will be created. If the
 path is not absolute, the path is considered to be relative to the cgroups path
 of the init process. Cgroups will be created if they do not already exist.
 
+#### **--cgroupns**=*how*
+
+Sets the configuration for cgroup namespaces when handling `RUN` instructions.
+The configured value can be "" (the empty string) or "private" to indicate
+that a new cgroup namespace should be created, or it can be "host" to indicate
+that the cgroup namespace in which `buildah` itself is being run should be reused.
+
 #### **--compress**
 
 This option is added to be aligned with other containers CLIs.
 Podman doesn't communicate with a daemon or a remote server.
-Thus, compressing the data before sending it is irrelevant to Podman. (This option is not available with the remote Podman client)
-
-#### **--cni-config-dir**=*directory*
-
-Location of CNI configuration files which will dictate which plugins will be
-used to configure network interfaces and routing for containers created for
-handling `RUN` instructions, if those containers will be run in their own
-network namespaces, and networking is not disabled.
-
-#### **--cni-plugin-path**=*directory[:directory[:directory[...]]]*
-
-List of directories in which the CNI plugins which will be used for configuring
-network namespaces can be found.
+Thus, compressing the data before sending it is irrelevant to Podman. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--cpu-period**=*limit*
 
@@ -150,7 +149,7 @@ microseconds.
 
 On some systems, changing the CPU limits may not be allowed for non-root
 users. For more details, see
-https://github.com/containers/podman/blob/master/troubleshooting.md#26-running-containers-with-cpu-limits-fails-with-a-permissions-error
+https://github.com/containers/podman/blob/main/troubleshooting.md#26-running-containers-with-cpu-limits-fails-with-a-permissions-error
 
 #### **--cpu-quota**=*limit*
 
@@ -163,7 +162,7 @@ ends (controllable via **--cpu-period**).
 
 On some systems, changing the CPU limits may not be allowed for non-root
 users. For more details, see
-https://github.com/containers/podman/blob/master/troubleshooting.md#26-running-containers-with-cpu-limits-fails-with-a-permissions-error
+https://github.com/containers/podman/blob/main/troubleshooting.md#26-running-containers-with-cpu-limits-fails-with-a-permissions-error
 
 #### **--cpu-shares**, **-c**=*shares*
 
@@ -174,7 +173,7 @@ proportion can be modified by changing the container's CPU share weighting
 relative to the weighting of all other running containers.
 
 To modify the proportion from the default of 1024, use the **--cpu-shares**
-flag to set the weighting to 2 or higher.
+option to set the weighting to 2 or higher.
 
 The proportion will only apply when CPU-intensive processes are running.
 When tasks in one container are idle, other containers can use the
@@ -241,7 +240,7 @@ Note: if _host_device_ is a symbolic link then it will be resolved first.
 The container will only store the major and minor numbers of the host device.
 
 Note: if the user only has access rights via a group, accessing the device
-from inside a rootless container will fail. The **crun**(1) runtime offers a
+from inside a rootless container will fail. The **[crun(1)](https://github.com/containers/crun/tree/main/crun.1.md)** runtime offers a
 workaround for this by adding the option
 #### **--annotation run.oci.keep_original_groups=1**.
 
@@ -257,8 +256,8 @@ specifying **--disable-compression=false**.
 #### **--disable-content-trust**
 
 This is a Docker specific option to disable image verification to a container
-registry and is not supported by Podman.  This flag is a NOOP and provided
-solely for scripting compatibility. (This option is not available with the remote Podman client)
+registry and is not supported by Podman.  This option is a NOOP and provided
+solely for scripting compatibility. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--dns**=*dns*
 
@@ -267,7 +266,7 @@ Set custom DNS servers to be used during the build.
 This option can be used to override the DNS configuration passed to the
 container. Typically this is necessary when the host DNS configuration is
 invalid for the container (e.g., 127.0.0.1). When this is the case the `--dns`
-flag is necessary for every run.
+option is necessary for every run.
 
 The special value **none** can be specified to disable creation of
 /etc/resolv.conf in the container by Podman. The /etc/resolv.conf file in the
@@ -313,7 +312,7 @@ environment variable.  `export BUILDAH_FORMAT=docker`
 Overrides the first `FROM` instruction within the Containerfile.  If there are multiple
 FROM instructions in a Containerfile, only the first is changed.
 
-**-h**, **--help**
+#### **--help**, **-h**
 
 Print usage statement
 
@@ -321,14 +320,18 @@ Print usage statement
 
 Pass through HTTP Proxy environment variables.
 
-#### **--iidfile**=*ImageIDfile*
+#### **--identity-label**
 
-Write the built image's ID to the file.  When `--platform` is specified more
-than once, attempting to use this option will trigger an error.
+Adds default identity label `io.buildah.version` if set. (default true).
 
 #### **--ignorefile**
 
 Path to an alternative .containerignore file.
+
+#### **--iidfile**=*ImageIDfile*
+
+Write the built image's ID to the file.  When `--platform` is specified more
+than once, attempting to use this option will trigger an error.
 
 #### **--ipc**=*how*
 
@@ -344,7 +347,7 @@ another process.
 Controls what type of isolation is used for running processes as part of `RUN`
 instructions.  Recognized types include *oci* (OCI-compatible runtime, the
 default), *rootless* (OCI-compatible runtime invoked using a modified
-configuration and its --rootless flag enabled, with *--no-new-keyring
+configuration and its --rootless option enabled, with *--no-new-keyring
 --no-pivot* added to its *create* invocation, with network and UTS namespaces
 disabled, and IPC, PID, and user namespaces enabled; the default for
 unprivileged users), and *chroot* (an internal wrapper that leans more toward
@@ -365,7 +368,7 @@ Add an image *label* (e.g. label=*value*) to the image metadata. Can be used
 multiple times.
 
 Users can set a special LABEL **io.containers.capabilities=CAP1,CAP2,CAP3** in
-a Containerfile that specified the list of Linux capabilities required for the
+a Containerfile that specifies the list of Linux capabilities required for the
 container to run properly. This label specified in a container image tells
 Podman to run the container with just these capabilities. Podman launches the
 container with just the specified capabilities, as long as this list of
@@ -406,7 +409,7 @@ trillions).
 #### **--memory-swap**=*LIMIT*
 
 A limit value equal to memory plus swap. Must be used with the  **-m**
-(**--memory**) flag. The swap `LIMIT` should always be larger than **-m**
+(**--memory**) option. The swap `LIMIT` should always be larger than **-m**
 (**--memory**) value.  By default, the swap `LIMIT` will be set to double
 the value of --memory.
 
@@ -425,12 +428,20 @@ Valid _mode_ values are:
 container full access to local system services such as D-bus and is therefore
 considered insecure.
 - **ns:**_path_: path to a network namespace to join.
-- **private**: create a new namespace for the container (default).
+- **private**: create a new namespace for the container (default)
+- **\<network name|ID\>**: Join the network with the given name or ID, e.g. use `--network mynet` to join the network with the name mynet. Only supported for rootful users.
 
 #### **--no-cache**
 
 Do not use existing cached images for the container build. Build from the start
 with a new set of cached layers.
+
+#### **--no-hosts**
+
+Do not create _/etc/hosts_ for the container.
+By default, Podman will manage _/etc/hosts_, adding the container's own IP address and any hosts from **--add-host**.
+**--no-hosts** disables this, and the image's _/etc/hosts_ will be preserved unmodified.
+This option conflicts with **--add-host**.
 
 #### **--os**=*string*
 
@@ -455,7 +466,7 @@ architecture of the host (for example `linux/arm`). If `--platform` is set,
 then the values of the `--arch`, `--os`, and `--variant` options will be
 overridden.
 
-The `--platform` flag can be specified more than once, or given a
+The `--platform` option can be specified more than once, or given a
 comma-separated list of values as its argument.  When more than one platform is
 specified, the `--manifest` option should be used instead of the `--tag`
 option.
@@ -472,23 +483,25 @@ the help of emulation provided by packages like `qemu-user-static`.
 
 #### **--pull**
 
-When the option is specified or set to "true", pull the image.  Raise an error
-if the image could not be pulled, even if the image is present locally.
+When the option is enabled or set explicitly to `true` (with *--pull=true*)
+pull the image from the first registry it is found in as listed in registries.conf.
+Raise an error if the image could not be pulled, even if the image is present locally.
 
-If the option is disabled (with *--pull=false*) or not specified, pull the
-image from the registry only if the image is not present locally. Raise an
-error if the image is not found in the registries and is not present locally.
+If the option is disabled (with *--pull=false*), pull the image from the
+registry only if the image is not present locally. Raise an error if the image is not
+in the registries and not present locally.
 
-#### **--pull-always**
+If the pull option is set to `always` (with *--pull=always*),
+pull the image from the first registry it is found in as listed in registries.conf.
+Raise an error if not found in the registries, even if the image is present locally.
 
-Pull the image from the first registry it is found in as listed in
-registries.conf. Raise an error if not found in the registries, even if the
-image is present locally.
+If the pull option is set to `missing` (with *--pull=missing*),
+Pull the image only if it is not present in the local storage.  Raise an error if it
+could neither be found in the local storage or on a registry.
 
-#### **--pull-never**
-
-Do not pull the image from the registry, use only the local version. Raise an
-error if the image is not present locally.
+If the pull option is set to `never` (with *--pull=never*),
+Do not pull the image from the registry, use only the local version. Raise an error
+if the image is not present locally.
 
 #### **--quiet**, **-q**
 
@@ -514,7 +527,7 @@ Pass secret information to be used in the Containerfile for building images
 in a safe way that will not end up stored in the final image, or be seen in other stages.
 The secret will be mounted in the container at the default location of `/run/secrets/id`.
 
-To later use the secret, use the --mount flag in a `RUN` instruction within a `Containerfile`:
+To later use the secret, use the --mount option in a `RUN` instruction within a `Containerfile`:
 
 `RUN --mount=type=secret,id=mysecret cat /run/secrets/mysecret`
 
@@ -548,7 +561,7 @@ size entirely, the system uses `64m`.
 
 #### **--sign-by**=*fingerprint*
 
-Sign the image using a GPG key with the specified FINGERPRINT. (This option is not available with the remote Podman client)
+Sign the image using a GPG key with the specified FINGERPRINT. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines,)
 
 #### **--squash**
 
@@ -565,7 +578,7 @@ image) into a single new layer.
 SSH agent socket or keys to expose to the build.
 The socket path can be left empty to use the value of `default=$SSH_AUTH_SOCK`
 
-To later use the ssh agent, use the --mount flag in a `RUN` instruction within a `Containerfile`:
+To later use the ssh agent, use the --mount option in a `RUN` instruction within a `Containerfile`:
 
 `RUN --mount=type=ssh,id=id mycmd`
 
@@ -602,7 +615,7 @@ timestamp.
 #### **--tls-verify**
 
 Require HTTPS and verify certificates when talking to container registries
-(defaults to true). (This option is not available with the remote Podman client)
+(defaults to true). (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--ulimit**=*type*=*soft-limit*[:*hard-limit*]
 
@@ -625,6 +638,10 @@ types include:
   "sigpending": maximum number of pending signals (ulimit -i)
   "stack": maximum stack size (ulimit -s)
 
+#### **--unsetenv** *env*
+
+Unset environment variables from the final image.
+
 #### **--userns**=*how*
 
 Sets the configuration for user namespaces when handling `RUN` instructions.
@@ -633,27 +650,6 @@ that a new user namespace should be created, it can be "host" to indicate that
 the user namespace in which `podman` itself is being run should be reused, or
 it can be the path to a user namespace which is already in use by another
 process.
-
-#### **--userns-uid-map**=*mapping*
-
-Directly specifies a UID mapping which should be used to set ownership, at the
-filesystem level, on the working container's contents.
-Commands run when handling `RUN` instructions will default to being run in
-their own user namespaces, configured using the UID and GID maps.
-
-Entries in this map take the form of one or more triples of a starting
-in-container UID, a corresponding starting host-level UID, and the number of
-consecutive IDs which the map entry represents.
-
-This option overrides the *remap-uids* setting in the *options* section of
-/etc/containers/storage.conf.
-
-If this option is not specified, but a global --userns-uid-map setting is
-supplied, settings from the global option will be used.
-
-If none of --userns-uid-map-user, --userns-gid-map-group, or --userns-uid-map
-are specified, but --userns-gid-map is specified, the UID map will be set to
-use the same numeric values as the GID map.
 
 #### **--userns-gid-map**=*mapping*
 
@@ -676,21 +672,6 @@ If none of --userns-uid-map-user, --userns-gid-map-group, or --userns-gid-map
 are specified, but --userns-uid-map is specified, the GID map will be set to
 use the same numeric values as the UID map.
 
-#### **--userns-uid-map-user**=*user*
-
-Specifies that a UID mapping which should be used to set ownership, at the
-filesystem level, on the working container's contents, can be found in entries
-in the `/etc/subuid` file which correspond to the specified user.
-Commands run when handling `RUN` instructions will default to being run in
-their own user namespaces, configured using the UID and GID maps.
-If --userns-gid-map-group is specified, but --userns-uid-map-user is not
-specified, `podman` will assume that the specified group name is also a
-suitable user name to use as the default setting for this option.
-
-**NOTE:** When this option is specified by a rootless user, the specified
-mappings are relative to the rootless user namespace in the container, rather
-than being relative to the host as it would be when run rootfull.
-
 #### **--userns-gid-map-group**=*group*
 
 Specifies that a GID mapping which should be used to set ownership, at the
@@ -704,11 +685,47 @@ suitable group name to use as the default setting for this option.
 
 **NOTE:** When this option is specified by a rootless user, the specified
 mappings are relative to the rootless user namespace in the container, rather
-than being relative to the host as it would be when run rootfull.
+than being relative to the host as it would be when run rootful.
+
+#### **--userns-uid-map**=*mapping*
+
+Directly specifies a UID mapping which should be used to set ownership, at the
+filesystem level, on the working container's contents.
+Commands run when handling `RUN` instructions will default to being run in
+their own user namespaces, configured using the UID and GID maps.
+
+Entries in this map take the form of one or more triples of a starting
+in-container UID, a corresponding starting host-level UID, and the number of
+consecutive IDs which the map entry represents.
+
+This option overrides the *remap-uids* setting in the *options* section of
+/etc/containers/storage.conf.
+
+If this option is not specified, but a global --userns-uid-map setting is
+supplied, settings from the global option will be used.
+
+If none of --userns-uid-map-user, --userns-gid-map-group, or --userns-uid-map
+are specified, but --userns-gid-map is specified, the UID map will be set to
+use the same numeric values as the GID map.
+
+#### **--userns-uid-map-user**=*user*
+
+Specifies that a UID mapping which should be used to set ownership, at the
+filesystem level, on the working container's contents, can be found in entries
+in the `/etc/subuid` file which correspond to the specified user.
+Commands run when handling `RUN` instructions will default to being run in
+their own user namespaces, configured using the UID and GID maps.
+If --userns-gid-map-group is specified, but --userns-uid-map-user is not
+specified, `podman` will assume that the specified group name is also a
+suitable user name to use as the default setting for this option.
+
+**NOTE:** When this option is specified by a rootless user, the specified
+mappings are relative to the rootless user namespace in the container, rather
+than being relative to the host as it would be when run rootful.
 
 #### **--uts**=*how*
 
-Sets the configuration for UTS namespaces when the handling `RUN` instructions.
+Sets the configuration for UTS namespaces when handling `RUN` instructions.
 The configured value can be "" (the empty string) or "container" to indicate
 that a new UTS namespace should be created, or it can be "host" to indicate
 that the UTS namespace in which `podman` itself is being run should be reused,
@@ -725,7 +742,7 @@ using the architecture variant of the build host.
 
    Create a bind mount. If you specify, ` -v /HOST-DIR:/CONTAINER-DIR`, Podman
    bind mounts `/HOST-DIR` in the host to `/CONTAINER-DIR` in the Podman
-   container. (This option is not available with the remote Podman client)
+   container. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
    The `OPTIONS` are a comma-separated list and can be: <sup>[[1]](#Footnote1)</sup>
 
@@ -773,6 +790,14 @@ share the volume content. As a result, Podman labels the content with a shared
 content label. Shared volume labels allow all containers to read/write content.
 The `Z` option tells Podman to label the content with a private unshared label.
 Only the current container can use a private volume.
+
+Note: Do not relabel system files and directories. Relabeling system content
+might cause other confined services on your machine to fail.  For these types
+of containers, disabling SELinux separation is recommended.  The option
+`--security-opt label=disable` disables SELinux separation for the container.
+For example, if a user wanted to volume mount their entire home directory into the build containers, they need to disable SELinux separation.
+
+	   $ podman build --security-opt label=disable -v $HOME:/home/user .
 
   `Overlay Volume Mounts`
 
@@ -878,6 +903,8 @@ $ podman build --no-cache -t imageName .
 $ podman build --layers --force-rm -t imageName .
 
 $ podman build --no-cache --rm=false -t imageName .
+
+$ podman build --network mynet .
 ```
 
 ### Building a multi-architecture image using the --manifest option (requires emulation software)
@@ -943,7 +970,7 @@ $ podman build -f dev/Containerfile https://10.10.10.1/podman/context.tar.gz
 ### .containerignore/.dockerignore
 
 If the file *.containerignore* or *.dockerignore* exists in the context directory,
-`podman build` reads its contents. Use the `--ignorefile` flag to override the
+`podman build` reads its contents. Use the `--ignorefile` option to override the
 .containerignore path location.
 Podman uses the content to exclude files and directories from the context
 directory, when executing COPY and ADD directives in the
@@ -991,7 +1018,7 @@ Exclude all doc files except Help.doc from the image.
 This functionality is compatible with the handling of .containerignore files
 described here:
 
-https://github.com/containers/buildah/blob/main/docs/containerignore.5.md
+https://github.com/containers/common/blob/main/docs/containerignore.5.md
 
 **registries.conf** (`/etc/containers/registries.conf`)
 
@@ -1013,7 +1040,7 @@ If you are using `useradd` within your build script, you should pass the
 useradd to stop creating the lastlog file.
 
 ## SEE ALSO
-podman(1), buildah(1), containers-certs.d(5), containers-registries.conf(5), crun(8), runc(8), useradd(8), podman-ps(1), podman-rm(1), Containerfile(5), containerignore(5)
+**[podman(1)](podman.1.md)**, **[buildah(1)](https://github.com/containers/buildah/blob/main/docs/buildah.1.md)**, **[containers-certs.d(5)](https://github.com/containers/image/blob/main/docs/containers-certs.d.5.md)**, **[containers-registries.conf(5)](https://github.com/containers/image/blob/main/docs/containers-registries.conf.5.md)**, **[crun(1)](https://github.com/containers/crun/blob/main/crun.1.md)**, **[runc(8)](https://github.com/opencontainers/runc/blob/master/man/runc.8.md)**, **[useradd(8)](https://www.unix.com/man-page/redhat/8/useradd)**, **[podman-ps(1)](podman-ps.1.md)**, **[podman-rm(1)](podman-rm.1.md)**, **[Containerfile(5)](https://github.com/containers/common/blob/main/docs/Containerfile.5.md)**, **[containerignore(5)](https://github.com/containers/common/blob/main/docs/containerignore.5.md)**
 
 ## HISTORY
 Aug 2020, Additional options and .containerignore added by Dan Walsh `<dwalsh@redhat.com>`

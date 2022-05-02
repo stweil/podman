@@ -1,4 +1,3 @@
-// +linux
 package libpod
 
 import (
@@ -161,7 +160,7 @@ func isPathOnBindMount(c *Container, containerPath string) bool {
 		if cleanedContainerPath == filepath.Clean(m.Destination) {
 			return true
 		}
-		for dest := m.Destination; dest != "/"; dest = filepath.Dir(dest) {
+		for dest := m.Destination; dest != "/" && dest != "."; dest = filepath.Dir(dest) {
 			if cleanedContainerPath == dest {
 				return true
 			}

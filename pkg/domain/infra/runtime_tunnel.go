@@ -1,3 +1,4 @@
+//go:build remote
 // +build remote
 
 package infra
@@ -7,9 +8,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/containers/podman/v3/pkg/bindings"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/domain/infra/tunnel"
+	"github.com/containers/podman/v4/pkg/bindings"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/domain/infra/tunnel"
 )
 
 var (

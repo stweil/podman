@@ -11,16 +11,17 @@ import (
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/cmd/podman/utils"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/specgen"
-	"github.com/containers/podman/v3/pkg/specgenutil"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/cmd/podman/utils"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v4/pkg/util"
 	"github.com/mattn/go-isatty"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -69,7 +70,7 @@ func createFlags(cmd *cobra.Command) {
 	)
 
 	flags.SetInterspersed(false)
-	common.DefineCreateFlags(cmd, &cliVals, false)
+	common.DefineCreateFlags(cmd, &cliVals, false, false)
 	common.DefineNetFlags(cmd)
 
 	flags.SetNormalizeFunc(utils.AliasFlags)
@@ -105,7 +106,7 @@ func create(cmd *cobra.Command, args []string) error {
 		err error
 	)
 	flags := cmd.Flags()
-	cliVals.Net, err = common.NetFlagsToNetOptions(nil, *flags, cliVals.Pod == "" && cliVals.PodIDFile == "")
+	cliVals.Net, err = common.NetFlagsToNetOptions(nil, *flags)
 	if err != nil {
 		return err
 	}
@@ -141,7 +142,7 @@ func create(cmd *cobra.Command, args []string) error {
 	}
 	s.RawImageName = rawImageName
 
-	if _, err := createPodIfNecessary(s, cliVals.Net); err != nil {
+	if err := createPodIfNecessary(cmd, s, cliVals.Net); err != nil {
 		return err
 	}
 
@@ -191,6 +192,10 @@ func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra 
 			vals.UserNS = "private"
 		}
 	}
+	if c.Flag("kernel-memory") != nil && c.Flag("kernel-memory").Changed {
+		logrus.Warnf("The --kernel-memory flag is no longer supported. This flag is a noop.")
+	}
+
 	if cliVals.LogDriver == define.PassthroughLogging {
 		if isatty.IsTerminal(0) || isatty.IsTerminal(1) || isatty.IsTerminal(2) {
 			return vals, errors.New("the '--log-driver passthrough' option cannot be used on a TTY")
@@ -233,6 +238,13 @@ func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra 
 			vals.GroupAdd = groups
 		}
 
+		if c.Flags().Changed("oom-score-adj") {
+			val, err := c.Flags().GetInt("oom-score-adj")
+			if err != nil {
+				return vals, err
+			}
+			vals.OOMScoreAdj = &val
+		}
 		if c.Flags().Changed("pids-limit") {
 			val := c.Flag("pids-limit").Value.String()
 			// Convert -1 to 0, so that -1 maps to unlimited pids limit
@@ -252,8 +264,8 @@ func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra 
 			}
 			vals.Env = env
 		}
-		if c.Flag("cgroups").Changed && vals.CGroupsMode == "split" && registry.IsRemote() {
-			return vals, errors.Errorf("the option --cgroups=%q is not supported in remote mode", vals.CGroupsMode)
+		if c.Flag("cgroups").Changed && vals.CgroupsMode == "split" && registry.IsRemote() {
+			return vals, errors.Errorf("the option --cgroups=%q is not supported in remote mode", vals.CgroupsMode)
 		}
 
 		if c.Flag("pod").Changed && !strings.HasPrefix(c.Flag("pod").Value.String(), "new:") && c.Flag("userns").Changed {
@@ -274,8 +286,6 @@ func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra 
 	if !isInfra && c.Flag("entrypoint").Changed {
 		val := c.Flag("entrypoint").Value.String()
 		vals.Entrypoint = &val
-	} else if isInfra && c.Flag("infra-command").Changed {
-
 	}
 
 	// Docker-compatibility: the "-h" flag for run/create is reserved for
@@ -285,7 +295,7 @@ func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra 
 }
 
 func PullImage(imageName string, cliVals entities.ContainerCreateOptions) (string, error) {
-	pullPolicy, err := config.ValidatePullPolicy(cliVals.Pull)
+	pullPolicy, err := config.ParsePullPolicy(cliVals.Pull)
 	if err != nil {
 		return "", err
 	}
@@ -303,6 +313,11 @@ func PullImage(imageName string, cliVals entities.ContainerCreateOptions) (strin
 		}
 	}
 
+	skipTLSVerify := types.OptionalBoolUndefined
+	if cliVals.TLSVerify.Present() {
+		skipTLSVerify = types.NewOptionalBool(!cliVals.TLSVerify.Value())
+	}
+
 	pullReport, pullErr := registry.ImageEngine().Pull(registry.GetContext(), imageName, entities.ImagePullOptions{
 		Authfile:        cliVals.Authfile,
 		Quiet:           cliVals.Quiet,
@@ -311,7 +326,7 @@ func PullImage(imageName string, cliVals entities.ContainerCreateOptions) (strin
 		Variant:         cliVals.Variant,
 		SignaturePolicy: cliVals.SignaturePolicy,
 		PullPolicy:      pullPolicy,
-		SkipTLSVerify:   types.NewOptionalBool(!cliVals.TLSVerify), // If Flag changed for TLS Verification
+		SkipTLSVerify:   skipTLSVerify,
 	})
 	if pullErr != nil {
 		return "", pullErr
@@ -330,13 +345,13 @@ func PullImage(imageName string, cliVals entities.ContainerCreateOptions) (strin
 // createPodIfNecessary automatically creates a pod when requested.  if the pod name
 // has the form new:ID, the pod ID is created and the name in the spec generator is replaced
 // with ID.
-func createPodIfNecessary(s *specgen.SpecGenerator, netOpts *entities.NetOptions) (*entities.PodCreateReport, error) {
+func createPodIfNecessary(cmd *cobra.Command, s *specgen.SpecGenerator, netOpts *entities.NetOptions) error {
 	if !strings.HasPrefix(s.Pod, "new:") {
-		return nil, nil
+		return nil
 	}
 	podName := strings.Replace(s.Pod, "new:", "", 1)
 	if len(podName) < 1 {
-		return nil, errors.Errorf("new pod name must be at least one character")
+		return errors.Errorf("new pod name must be at least one character")
 	}
 
 	var err error
@@ -344,7 +359,7 @@ func createPodIfNecessary(s *specgen.SpecGenerator, netOpts *entities.NetOptions
 	if cliVals.UserNS != "" {
 		uns, err = specgen.ParseNamespace(cliVals.UserNS)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 	createOptions := entities.PodCreateOptions{
@@ -366,26 +381,25 @@ func createPodIfNecessary(s *specgen.SpecGenerator, netOpts *entities.NetOptions
 	podSpec := entities.PodSpec{}
 	podGen := specgen.NewPodSpecGenerator()
 	podSpec.PodSpecGen = *podGen
-	podGen, err = entities.ToPodSpecGen(*&podSpec.PodSpecGen, &createOptions)
+	podGen, err = entities.ToPodSpecGen(podSpec.PodSpecGen, &createOptions)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	infraOpts := entities.ContainerCreateOptions{ImageVolume: "bind", Net: netOpts, Quiet: true}
-	rawImageName := config.DefaultInfraImage
-	name, err := PullImage(rawImageName, infraOpts)
+	infraOpts := entities.NewInfraContainerCreateOptions()
+	infraOpts.Net = netOpts
+	infraOpts.Quiet = true
+	infraOpts.Hostname, err = cmd.Flags().GetString("hostname")
 	if err != nil {
-		fmt.Println(err)
+		return err
 	}
-	imageName := name
-	podGen.InfraImage = imageName
-	podGen.InfraContainerSpec = specgen.NewSpecGenerator(imageName, false)
-	podGen.InfraContainerSpec.RawImageName = rawImageName
+	podGen.InfraContainerSpec = specgen.NewSpecGenerator("", false)
 	podGen.InfraContainerSpec.NetworkOptions = podGen.NetworkOptions
 	err = specgenutil.FillOutSpecGen(podGen.InfraContainerSpec, &infraOpts, []string{})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	podSpec.PodSpecGen = *podGen
-	return registry.ContainerEngine().PodCreate(context.Background(), podSpec)
+	_, err = registry.ContainerEngine().PodCreate(context.Background(), podSpec)
+	return err
 }

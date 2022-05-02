@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 // Package rootlessport provides reexec for RootlessKit-based port forwarder.
@@ -12,7 +13,7 @@
 package rootlessport
 
 import (
-	"github.com/containers/podman/v3/libpod/network/types"
+	"github.com/containers/common/libnetwork/types"
 )
 
 const (
@@ -23,7 +24,7 @@ const (
 // Config needs to be provided to the process via stdin as a JSON string.
 // stdin needs to be closed after the message has been written.
 type Config struct {
-	Mappings    []types.OCICNIPortMapping
+	Mappings    []types.PortMapping
 	NetNSPath   string
 	ExitFD      int
 	ReadyFD     int

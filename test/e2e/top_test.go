@@ -3,7 +3,7 @@ package integration
 import (
 	"os"
 
-	. "github.com/containers/podman/v3/test/utils"
+	. "github.com/containers/podman/v4/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
@@ -23,7 +23,6 @@ var _ = Describe("Podman top", func() {
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.SeedImages()
 	})
 
 	AfterEach(func() {
@@ -101,6 +100,11 @@ var _ = Describe("Podman top", func() {
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(Exit(0))
 		Expect(len(result.OutputToStringArray())).To(BeNumerically(">", 1))
+
+		result = podmanTest.Podman([]string{"top", session.OutputToString(), "ax -o args"})
+		result.WaitWithDefaultTimeout()
+		Expect(result).Should(Exit(0))
+		Expect(result.OutputToStringArray()).To(Equal([]string{"COMMAND", "top -d 2"}))
 	})
 
 	It("podman top with comma-separated options", func() {

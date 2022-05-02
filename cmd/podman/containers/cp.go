@@ -10,11 +10,11 @@ import (
 	"strings"
 
 	buildahCopiah "github.com/containers/buildah/copier"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/pkg/copy"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/errorhandling"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/pkg/copy"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/errorhandling"
 	"github.com/containers/storage/pkg/archive"
 	"github.com/containers/storage/pkg/idtools"
 	"github.com/pkg/errors"
@@ -449,7 +449,7 @@ func resolvePathOnDestinationContainer(container string, containerPath string, i
 	containerInfo, err = registry.ContainerEngine().ContainerStat(registry.GetContext(), container, containerPath)
 	if err == nil {
 		baseName = filepath.Base(containerInfo.LinkTarget)
-		return
+		return // nolint: nilerr
 	}
 
 	if strings.HasSuffix(containerPath, "/") {

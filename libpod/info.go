@@ -14,12 +14,12 @@ import (
 
 	"github.com/containers/buildah"
 	"github.com/containers/common/pkg/apparmor"
+	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/seccomp"
 	"github.com/containers/image/v5/pkg/sysregistriesv2"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/libpod/linkmode"
-	"github.com/containers/podman/v3/pkg/cgroups"
-	"github.com/containers/podman/v3/pkg/rootless"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/libpod/linkmode"
+	"github.com/containers/podman/v4/pkg/rootless"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/system"
 	"github.com/opencontainers/selinux/go-selinux"
@@ -104,7 +104,7 @@ func (r *Runtime) hostInfo() (*define.HostInfo, error) {
 		return nil, errors.Wrapf(err, "error getting Seccomp profile path")
 	}
 
-	// CGroups version
+	// Cgroups version
 	unified, err := cgroups.IsCgroup2UnifiedMode()
 	if err != nil {
 		return nil, errors.Wrapf(err, "error reading cgroups mode")
@@ -131,6 +131,7 @@ func (r *Runtime) hostInfo() (*define.HostInfo, error) {
 		Kernel:            kv,
 		MemFree:           mi.MemFree,
 		MemTotal:          mi.MemTotal,
+		NetworkBackend:    r.config.Network.NetworkBackend,
 		OS:                runtime.GOOS,
 		Security: define.SecurityInfo{
 			AppArmorEnabled:     apparmor.IsEnabled(),
@@ -149,7 +150,7 @@ func (r *Runtime) hostInfo() (*define.HostInfo, error) {
 	if unified {
 		cgroupVersion = "v2"
 	}
-	info.CGroupsVersion = cgroupVersion
+	info.CgroupsVersion = cgroupVersion
 
 	slirp4netnsPath := r.config.Engine.NetworkCmdPath
 	if slirp4netnsPath == "" {
@@ -332,7 +333,7 @@ func readKernelVersion() (string, error) {
 		return "", err
 	}
 	f := bytes.Fields(buf)
-	if len(f) < 2 {
+	if len(f) < 3 {
 		return string(bytes.TrimSpace(buf)), nil
 	}
 	return string(f[2]), nil

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/containers/podman/v3/libpod/events"
+	"github.com/containers/podman/v4/libpod/events"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -13,8 +13,9 @@ import (
 // newEventer returns an eventer that can be used to read/write events
 func (r *Runtime) newEventer() (events.Eventer, error) {
 	options := events.EventerOptions{
-		EventerType: r.config.Engine.EventsLogger,
-		LogFilePath: r.config.Engine.EventsLogFilePath,
+		EventerType:    r.config.Engine.EventsLogger,
+		LogFilePath:    r.config.Engine.EventsLogFilePath,
+		LogFileMaxSize: r.config.Engine.EventsLogMaxSize(),
 	}
 	return events.NewEventer(options)
 }

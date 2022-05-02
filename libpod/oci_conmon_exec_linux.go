@@ -13,11 +13,11 @@ import (
 
 	"github.com/containers/common/pkg/capabilities"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/errorhandling"
-	"github.com/containers/podman/v3/pkg/lookup"
-	"github.com/containers/podman/v3/pkg/util"
-	"github.com/containers/podman/v3/utils"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v4/pkg/lookup"
+	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v4/utils"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -76,7 +76,7 @@ func (r *ConmonOCIRuntime) ExecContainer(c *Container, sessionID string, options
 		return -1, nil, errors.Wrapf(err, "cannot run conmon")
 	}
 
-	pid, err := readConmonPipeData(pipes.syncPipe, ociLog)
+	pid, err := readConmonPipeData(r.name, pipes.syncPipe, ociLog)
 
 	return pid, attachChan, err
 }
@@ -134,7 +134,7 @@ func (r *ConmonOCIRuntime) ExecContainerHTTP(ctr *Container, sessionID string, o
 	conmonPipeDataChan := make(chan conmonPipeData)
 	go func() {
 		// attachToExec is responsible for closing pipes
-		attachChan <- attachExecHTTP(ctr, sessionID, req, w, streams, pipes, detachKeys, options.Terminal, cancel, hijackDone, holdConnOpen, execCmd, conmonPipeDataChan, ociLog, newSize)
+		attachChan <- attachExecHTTP(ctr, sessionID, req, w, streams, pipes, detachKeys, options.Terminal, cancel, hijackDone, holdConnOpen, execCmd, conmonPipeDataChan, ociLog, newSize, r.name)
 		close(attachChan)
 	}()
 
@@ -176,7 +176,7 @@ func (r *ConmonOCIRuntime) ExecContainerDetached(ctr *Container, sessionID strin
 	// Wait for Conmon to tell us we're ready to attach.
 	// We aren't actually *going* to attach, but this means that we're good
 	// to proceed.
-	if _, err := readConmonPipeData(pipes.attachPipe, ""); err != nil {
+	if _, err := readConmonPipeData(r.name, pipes.attachPipe, ""); err != nil {
 		return -1, err
 	}
 
@@ -190,7 +190,7 @@ func (r *ConmonOCIRuntime) ExecContainerDetached(ctr *Container, sessionID strin
 		return -1, errors.Wrapf(err, "cannot run conmon")
 	}
 
-	pid, err := readConmonPipeData(pipes.syncPipe, ociLog)
+	pid, err := readConmonPipeData(r.name, pipes.syncPipe, ociLog)
 
 	return pid, err
 }
@@ -257,7 +257,7 @@ func (r *ConmonOCIRuntime) ExecStopContainer(ctr *Container, sessionID string, t
 	}
 
 	// Wait for the PID to stop
-	if err := waitPidStop(pid, killContainerTimeout*time.Second); err != nil {
+	if err := waitPidStop(pid, killContainerTimeout); err != nil {
 		return errors.Wrapf(err, "timed out waiting for container %s exec session %s PID %d to stop after SIGKILL", ctr.ID(), sessionID, pid)
 	}
 
@@ -389,6 +389,7 @@ func (r *ConmonOCIRuntime) startExec(c *Container, sessionID string, options *Ex
 	if err != nil {
 		return nil, nil, err
 	}
+	defer processFile.Close()
 
 	args := r.sharedConmonArgs(c, sessionID, c.execBundlePath(sessionID), c.execPidPath(sessionID), c.execLogPath(sessionID), c.execExitFileDir(sessionID), ociLog, define.NoLogging, "")
 
@@ -438,7 +439,7 @@ func (r *ConmonOCIRuntime) startExec(c *Container, sessionID string, options *Ex
 	// 	}
 	// }
 
-	conmonEnv := r.configureConmonEnv(c, runtimeDir)
+	conmonEnv := r.configureConmonEnv(runtimeDir)
 
 	var filesToClose []*os.File
 	if options.PreserveFDs > 0 {
@@ -461,7 +462,7 @@ func (r *ConmonOCIRuntime) startExec(c *Container, sessionID string, options *Ex
 		Setpgid: true,
 	}
 
-	err = startCommandGivenSelinux(execCmd, c)
+	err = startCommand(execCmd, c)
 
 	// We don't need children pipes  on the parent side
 	errorhandling.CloseQuiet(childSyncPipe)
@@ -486,7 +487,7 @@ func (r *ConmonOCIRuntime) startExec(c *Container, sessionID string, options *Ex
 }
 
 // Attach to a container over HTTP
-func attachExecHTTP(c *Container, sessionID string, r *http.Request, w http.ResponseWriter, streams *HTTPAttachStreams, pipes *execPipes, detachKeys []byte, isTerminal bool, cancel <-chan bool, hijackDone chan<- bool, holdConnOpen <-chan bool, execCmd *exec.Cmd, conmonPipeDataChan chan<- conmonPipeData, ociLog string, newSize *define.TerminalSize) (deferredErr error) {
+func attachExecHTTP(c *Container, sessionID string, r *http.Request, w http.ResponseWriter, streams *HTTPAttachStreams, pipes *execPipes, detachKeys []byte, isTerminal bool, cancel <-chan bool, hijackDone chan<- bool, holdConnOpen <-chan bool, execCmd *exec.Cmd, conmonPipeDataChan chan<- conmonPipeData, ociLog string, newSize *define.TerminalSize, runtimeName string) (deferredErr error) {
 	// NOTE: As you may notice, the attach code is quite complex.
 	// Many things happen concurrently and yet are interdependent.
 	// If you ever change this function, make sure to write to the
@@ -519,7 +520,7 @@ func attachExecHTTP(c *Container, sessionID string, r *http.Request, w http.Resp
 	}
 
 	// 2: read from attachFd that the parent process has set up the console socket
-	if _, err := readConmonPipeData(pipes.attachPipe, ""); err != nil {
+	if _, err := readConmonPipeData(runtimeName, pipes.attachPipe, ""); err != nil {
 		conmonPipeDataChan <- conmonPipeData{-1, err}
 		return err
 	}
@@ -582,7 +583,7 @@ func attachExecHTTP(c *Container, sessionID string, r *http.Request, w http.Resp
 		if err := execCmd.Wait(); err != nil {
 			conmonPipeDataChan <- conmonPipeData{-1, err}
 		} else {
-			pid, err := readConmonPipeData(pipes.syncPipe, ociLog)
+			pid, err := readConmonPipeData(runtimeName, pipes.syncPipe, ociLog)
 			if err != nil {
 				hijackWriteError(err, c.ID(), isTerminal, httpBuf)
 				conmonPipeDataChan <- conmonPipeData{pid, err}
@@ -757,18 +758,19 @@ func prepareProcessExec(c *Container, options *ExecOptions, env []string, sessio
 	} else {
 		pspec.Capabilities.Bounding = ctrSpec.Process.Capabilities.Bounding
 	}
+
+	// Always unset the inheritable capabilities similarly to what the Linux kernel does
+	// They are used only when using capabilities with uid != 0.
+	pspec.Capabilities.Inheritable = []string{}
+
 	if execUser.Uid == 0 {
 		pspec.Capabilities.Effective = pspec.Capabilities.Bounding
-		pspec.Capabilities.Inheritable = pspec.Capabilities.Bounding
 		pspec.Capabilities.Permitted = pspec.Capabilities.Bounding
-		pspec.Capabilities.Ambient = pspec.Capabilities.Bounding
-	} else {
-		if user == c.config.User {
-			pspec.Capabilities.Effective = ctrSpec.Process.Capabilities.Effective
-			pspec.Capabilities.Inheritable = ctrSpec.Process.Capabilities.Effective
-			pspec.Capabilities.Permitted = ctrSpec.Process.Capabilities.Effective
-			pspec.Capabilities.Ambient = ctrSpec.Process.Capabilities.Effective
-		}
+	} else if user == c.config.User {
+		pspec.Capabilities.Effective = ctrSpec.Process.Capabilities.Effective
+		pspec.Capabilities.Inheritable = ctrSpec.Process.Capabilities.Effective
+		pspec.Capabilities.Permitted = ctrSpec.Process.Capabilities.Effective
+		pspec.Capabilities.Ambient = ctrSpec.Process.Capabilities.Effective
 	}
 
 	hasHomeSet := false

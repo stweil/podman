@@ -221,9 +221,7 @@ Labels.created_at | 20[0-9-]\\\+T[0-9:]\\\+Z
     iid=${output:0:12}
 
     # Run the test: this will output three column-aligned rows. Test them.
-    # Tab character (\t) should have the same effect as the 'table' directive
     _run_format_test 'table' 'table {{.Repository}} {{.Tag}} {{.ID}}'
-    _run_format_test 'tabs'  '{{.Repository}}\t{{.Tag}}\t{{.ID}}'
 
     # Clean up.
     run_podman rmi ${aaa_name}:${aaa_tag} ${zzz_name}:${zzz_tag}
@@ -242,4 +240,76 @@ Labels.created_at | 20[0-9-]\\\+T[0-9:]\\\+Z
 
     run_podman rmi test:1.0
 }
+
+@test "podman images - rmi -af removes all containers and pods" {
+    pname=$(random_string)
+    run_podman create --pod new:$pname $IMAGE
+
+    run_podman inspect --format '{{.ID}}' $IMAGE
+    imageID=$output
+
+    pauseImage=$(pause_image)
+    run_podman inspect --format '{{.ID}}' $pauseImage
+    pauseID=$output
+
+    run_podman 2 rmi -a
+    is "$output" "Error: 2 errors occurred:
+.** Image used by .*: image is in use by a container
+.** Image used by .*: image is in use by a container"
+
+    run_podman rmi -af
+    is "$output" "Untagged: $IMAGE
+Untagged: $pauseImage
+Deleted: $imageID
+Deleted: $pauseID" "infra images gets removed as well"
+
+    run_podman images --noheading
+    is "$output" ""
+    run_podman ps --all --noheading
+    is "$output" ""
+    run_podman pod ps --noheading
+    is "$output" ""
+
+    run_podman create --pod new:$pname $IMAGE
+    # Clean up
+    run_podman rm "${lines[-1]}"
+    run_podman pod rm -a
+    run_podman rmi $pauseImage
+}
+
+@test "podman images - rmi -f can remove infra images" {
+    pname=$(random_string)
+    run_podman create --pod new:$pname $IMAGE
+
+    run_podman version --format "{{.Server.Version}}-{{.Server.Built}}"
+    pauseImage=localhost/podman-pause:$output
+    run_podman inspect --format '{{.ID}}' $pauseImage
+    pauseID=$output
+
+    run_podman 2 rmi $pauseImage
+    is "$output" "Error: Image used by .* image is in use by a container"
+
+    run_podman rmi -f $pauseImage
+    is "$output" "Untagged: $pauseImage
+Deleted: $pauseID"
+
+    # Force-removing the infra container removes the pod and all its containers.
+    run_podman ps --all --noheading
+    is "$output" ""
+    run_podman pod ps --noheading
+    is "$output" ""
+
+    # Other images are still present.
+    run_podman image exists $IMAGE
+}
+
+@test "podman rmi --ignore" {
+    random_image_name=$(random_string)
+    random_image_name=${random_image_name,,} # name must be lowercase
+    run_podman 1 rmi $random_image_name
+    is "$output" "Error: $random_image_name: image not known.*"
+    run_podman rmi --ignore $random_image_name
+    is "$output" ""
+}
+
 # vim: filetype=sh

@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 package lock
@@ -5,7 +6,7 @@ package lock
 import (
 	"syscall"
 
-	"github.com/containers/podman/v3/libpod/lock/shm"
+	"github.com/containers/podman/v4/libpod/lock/shm"
 	"github.com/pkg/errors"
 )
 

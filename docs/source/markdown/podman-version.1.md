@@ -12,10 +12,6 @@ OS, and Architecture.
 
 ## OPTIONS
 
-#### **--help**, **-h**
-
-Print usage statement
-
 #### **--format**, **-f**=*format*
 
 Change output format to "json" or a Go template.
@@ -39,8 +35,12 @@ $ podman version --format '{{.Client.Version}}'
 2.0.0
 ```
 
+#### **--help**, **-h**
+
+Print usage statement
+
 ## SEE ALSO
-podman(1)
+**[podman(1)](podman.1.md)**
 
 ## HISTORY
 November 2018, Added --format flag by Tomas Tomecek <ttomecek@redhat.com>

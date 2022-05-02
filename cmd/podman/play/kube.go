@@ -4,17 +4,18 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/cmd/podman/utils"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/errorhandling"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/cmd/podman/utils"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v4/pkg/util"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -27,10 +28,12 @@ type playKubeOptionsWrapper struct {
 	TLSVerifyCLI   bool
 	CredentialsCLI string
 	StartCLI       bool
+	BuildCLI       bool
 }
 
 var (
-	macs []string
+	annotations []string
+	macs        []string
 	// https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/
 	defaultSeccompRoot = "/var/lib/kubelet/seccomp"
 	kubeOptions        = playKubeOptionsWrapper{}
@@ -60,6 +63,13 @@ func init() {
 	flags := kubeCmd.Flags()
 	flags.SetNormalizeFunc(utils.AliasFlags)
 
+	annotationFlagName := "annotation"
+	flags.StringSliceVar(
+		&annotations,
+		annotationFlagName, []string{},
+		"Add annotations to pods (key=value)",
+	)
+	_ = kubeCmd.RegisterFlagCompletionFunc(annotationFlagName, completion.AutocompleteNone)
 	credsFlagName := "creds"
 	flags.StringVar(&kubeOptions.CredentialsCLI, credsFlagName, "", "`Credentials` (USERNAME:PASSWORD) to use for authenticating to a registry")
 	_ = kubeCmd.RegisterFlagCompletionFunc(credsFlagName, completion.AutocompleteNone)
@@ -69,7 +79,7 @@ func init() {
 	_ = kubeCmd.RegisterFlagCompletionFunc(staticMACFlagName, completion.AutocompleteNone)
 
 	networkFlagName := "network"
-	flags.StringVar(&kubeOptions.Network, networkFlagName, "", "Connect pod to CNI network(s)")
+	flags.StringArrayVar(&kubeOptions.Networks, networkFlagName, nil, "Connect pod to network(s) or network mode")
 	_ = kubeCmd.RegisterFlagCompletionFunc(networkFlagName, common.AutocompleteNetworkFlag)
 
 	staticIPFlagName := "ip"
@@ -79,6 +89,14 @@ func init() {
 	logDriverFlagName := "log-driver"
 	flags.StringVar(&kubeOptions.LogDriver, logDriverFlagName, "", "Logging driver for the container")
 	_ = kubeCmd.RegisterFlagCompletionFunc(logDriverFlagName, common.AutocompleteLogDriver)
+
+	logOptFlagName := "log-opt"
+	flags.StringSliceVar(
+		&kubeOptions.LogOptions,
+		logOptFlagName, []string{},
+		"Logging driver options",
+	)
+	_ = kubeCmd.RegisterFlagCompletionFunc(logOptFlagName, common.AutocompleteLogOpt)
 
 	flags.BoolVar(&kubeOptions.NoHosts, "no-hosts", false, "Do not create /etc/hosts within the pod's containers, instead use the version from the image")
 	flags.BoolVarP(&kubeOptions.Quiet, "quiet", "q", false, "Suppress output information when pulling images")
@@ -100,8 +118,6 @@ func init() {
 		flags.StringVar(&kubeOptions.CertDir, certDirFlagName, "", "`Pathname` of a directory containing TLS certificates and keys")
 		_ = kubeCmd.RegisterFlagCompletionFunc(certDirFlagName, completion.AutocompleteDefault)
 
-		flags.StringVar(&kubeOptions.SignaturePolicy, "signature-policy", "", "`Pathname` of signature policy file (not usually used)")
-
 		seccompProfileRootFlagName := "seccomp-profile-root"
 		flags.StringVar(&kubeOptions.SeccompProfileRoot, seccompProfileRootFlagName, defaultSeccompRoot, "Directory path for seccomp profiles")
 		_ = kubeCmd.RegisterFlagCompletionFunc(seccompProfileRootFlagName, completion.AutocompleteDefault)
@@ -111,9 +127,16 @@ func init() {
 		_ = kubeCmd.RegisterFlagCompletionFunc(configmapFlagName, completion.AutocompleteDefault)
 
 		buildFlagName := "build"
-		flags.BoolVar(&kubeOptions.Build, buildFlagName, false, "Build all images in a YAML (given Containerfiles exist)")
+		flags.BoolVar(&kubeOptions.BuildCLI, buildFlagName, false, "Build all images in a YAML (given Containerfiles exist)")
+
+		contextDirFlagName := "context-dir"
+		flags.StringVar(&kubeOptions.ContextDir, contextDirFlagName, "", "Path to top level of context directory")
+		_ = kubeCmd.RegisterFlagCompletionFunc(contextDirFlagName, completion.AutocompleteDefault)
+
+		flags.StringVar(&kubeOptions.SignaturePolicy, "signature-policy", "", "`Pathname` of signature policy file (not usually used)")
+
+		_ = flags.MarkHidden("signature-policy")
 	}
-	_ = flags.MarkHidden("signature-policy")
 }
 
 func kube(cmd *cobra.Command, args []string) error {
@@ -127,10 +150,16 @@ func kube(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("start") {
 		kubeOptions.Start = types.NewOptionalBool(kubeOptions.StartCLI)
 	}
+	if cmd.Flags().Changed("build") {
+		kubeOptions.Build = types.NewOptionalBool(kubeOptions.BuildCLI)
+	}
 	if kubeOptions.Authfile != "" {
 		if _, err := os.Stat(kubeOptions.Authfile); err != nil {
 			return err
 		}
+	}
+	if kubeOptions.ContextDir != "" && kubeOptions.Build != types.OptionalBoolTrue {
+		return errors.New("--build must be specified when using --context-dir option")
 	}
 	if kubeOptions.CredentialsCLI != "" {
 		creds, err := util.ParseRegistryCreds(kubeOptions.CredentialsCLI)
@@ -141,6 +170,20 @@ func kube(cmd *cobra.Command, args []string) error {
 		kubeOptions.Password = creds.Password
 	}
 
+	for _, annotation := range annotations {
+		splitN := strings.SplitN(annotation, "=", 2)
+		if len(splitN) > 2 {
+			return errors.Errorf("annotation %q must include an '=' sign", annotation)
+		}
+		if kubeOptions.Annotations == nil {
+			kubeOptions.Annotations = make(map[string]string)
+		}
+		annotation := splitN[1]
+		if len(annotation) > define.MaxKubeAnnotation {
+			return errors.Errorf("annotation exceeds maximum size, %d, of kubernetes annotation: %s", define.MaxKubeAnnotation, annotation)
+		}
+		kubeOptions.Annotations[splitN[0]] = annotation
+	}
 	yamlfile := args[0]
 	if yamlfile == "-" {
 		yamlfile = "/dev/stdin"
@@ -170,9 +213,14 @@ func teardown(yamlfile string) error {
 		podRmErrors   utils.OutputErrors
 	)
 	options := new(entities.PlayKubeDownOptions)
-	reports, err := registry.ContainerEngine().PlayKubeDown(registry.GetContext(), yamlfile, *options)
+	f, err := os.Open(yamlfile)
 	if err != nil {
 		return err
+	}
+	defer f.Close()
+	reports, err := registry.ContainerEngine().PlayKubeDown(registry.GetContext(), f, *options)
+	if err != nil {
+		return errors.Wrap(err, yamlfile)
 	}
 
 	// Output stopped pods
@@ -203,9 +251,14 @@ func teardown(yamlfile string) error {
 }
 
 func playkube(yamlfile string) error {
-	report, err := registry.ContainerEngine().PlayKube(registry.GetContext(), yamlfile, kubeOptions.PlayKubeOptions)
+	f, err := os.Open(yamlfile)
 	if err != nil {
 		return err
+	}
+	defer f.Close()
+	report, err := registry.ContainerEngine().PlayKube(registry.GetContext(), f, kubeOptions.PlayKubeOptions)
+	if err != nil {
+		return errors.Wrap(err, yamlfile)
 	}
 	// Print volumes report
 	for i, volume := range report.Volumes {

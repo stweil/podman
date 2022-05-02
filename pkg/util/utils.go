@@ -3,6 +3,7 @@ package util
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"os/user"
@@ -17,17 +18,17 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v3/pkg/errorhandling"
-	"github.com/containers/podman/v3/pkg/namespaces"
-	"github.com/containers/podman/v3/pkg/rootless"
-	"github.com/containers/podman/v3/pkg/signal"
+	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v4/pkg/namespaces"
+	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v4/pkg/signal"
 	"github.com/containers/storage/pkg/idtools"
 	stypes "github.com/containers/storage/types"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 )
 
 var containerConfig *config.Config
@@ -64,7 +65,7 @@ func ParseRegistryCreds(creds string) (*types.DockerAuthConfig, error) {
 	}
 	if password == "" {
 		fmt.Print("Password: ")
-		termPassword, err := terminal.ReadPassword(0)
+		termPassword, err := term.ReadPassword(0)
 		if err != nil {
 			return nil, errors.Wrapf(err, "could not read password from terminal")
 		}
@@ -346,53 +347,82 @@ func ParseSignal(rawSignal string) (syscall.Signal, error) {
 
 // GetKeepIDMapping returns the mappings and the user to use when keep-id is used
 func GetKeepIDMapping() (*stypes.IDMappingOptions, int, int, error) {
+	if !rootless.IsRootless() {
+		return nil, -1, -1, errors.New("keep-id is only supported in rootless mode")
+	}
 	options := stypes.IDMappingOptions{
-		HostUIDMapping: true,
-		HostGIDMapping: true,
+		HostUIDMapping: false,
+		HostGIDMapping: false,
 	}
-	uid, gid := 0, 0
-	if rootless.IsRootless() {
-		min := func(a, b int) int {
-			if a < b {
-				return a
-			}
-			return b
+	min := func(a, b int) int {
+		if a < b {
+			return a
 		}
-
-		uid = rootless.GetRootlessUID()
-		gid = rootless.GetRootlessGID()
-
-		uids, gids, err := rootless.GetConfiguredMappings()
-		if err != nil {
-			return nil, -1, -1, errors.Wrapf(err, "cannot read mappings")
-		}
-		maxUID, maxGID := 0, 0
-		for _, u := range uids {
-			maxUID += u.Size
-		}
-		for _, g := range gids {
-			maxGID += g.Size
-		}
-
-		options.UIDMap, options.GIDMap = nil, nil
-
-		options.UIDMap = append(options.UIDMap, idtools.IDMap{ContainerID: 0, HostID: 1, Size: min(uid, maxUID)})
-		options.UIDMap = append(options.UIDMap, idtools.IDMap{ContainerID: uid, HostID: 0, Size: 1})
-		if maxUID > uid {
-			options.UIDMap = append(options.UIDMap, idtools.IDMap{ContainerID: uid + 1, HostID: uid + 1, Size: maxUID - uid})
-		}
-
-		options.GIDMap = append(options.GIDMap, idtools.IDMap{ContainerID: 0, HostID: 1, Size: min(gid, maxGID)})
-		options.GIDMap = append(options.GIDMap, idtools.IDMap{ContainerID: gid, HostID: 0, Size: 1})
-		if maxGID > gid {
-			options.GIDMap = append(options.GIDMap, idtools.IDMap{ContainerID: gid + 1, HostID: gid + 1, Size: maxGID - gid})
-		}
-
-		options.HostUIDMapping = false
-		options.HostGIDMapping = false
+		return b
 	}
-	// Simply ignore the setting and do not setup an inner namespace for root as it is a no-op
+
+	uid := rootless.GetRootlessUID()
+	gid := rootless.GetRootlessGID()
+
+	uids, gids, err := rootless.GetConfiguredMappings()
+	if err != nil {
+		return nil, -1, -1, errors.Wrapf(err, "cannot read mappings")
+	}
+	if len(uids) == 0 || len(gids) == 0 {
+		return nil, -1, -1, errors.Wrapf(err, "keep-id requires additional UIDs or GIDs defined in /etc/subuid and /etc/subgid to function correctly")
+	}
+	maxUID, maxGID := 0, 0
+	for _, u := range uids {
+		maxUID += u.Size
+	}
+	for _, g := range gids {
+		maxGID += g.Size
+	}
+
+	options.UIDMap, options.GIDMap = nil, nil
+
+	options.UIDMap = append(options.UIDMap, idtools.IDMap{ContainerID: 0, HostID: 1, Size: min(uid, maxUID)})
+	options.UIDMap = append(options.UIDMap, idtools.IDMap{ContainerID: uid, HostID: 0, Size: 1})
+	if maxUID > uid {
+		options.UIDMap = append(options.UIDMap, idtools.IDMap{ContainerID: uid + 1, HostID: uid + 1, Size: maxUID - uid})
+	}
+
+	options.GIDMap = append(options.GIDMap, idtools.IDMap{ContainerID: 0, HostID: 1, Size: min(gid, maxGID)})
+	options.GIDMap = append(options.GIDMap, idtools.IDMap{ContainerID: gid, HostID: 0, Size: 1})
+	if maxGID > gid {
+		options.GIDMap = append(options.GIDMap, idtools.IDMap{ContainerID: gid + 1, HostID: gid + 1, Size: maxGID - gid})
+	}
+
 	return &options, uid, gid, nil
+}
+
+// GetNoMapMapping returns the mappings and the user to use when nomap is used
+func GetNoMapMapping() (*stypes.IDMappingOptions, int, int, error) {
+	if !rootless.IsRootless() {
+		return nil, -1, -1, errors.New("nomap is only supported in rootless mode")
+	}
+	options := stypes.IDMappingOptions{
+		HostUIDMapping: false,
+		HostGIDMapping: false,
+	}
+	uids, gids, err := rootless.GetConfiguredMappings()
+	if err != nil {
+		return nil, -1, -1, errors.Wrapf(err, "cannot read mappings")
+	}
+	if len(uids) == 0 || len(gids) == 0 {
+		return nil, -1, -1, errors.Wrapf(err, "nomap requires additional UIDs or GIDs defined in /etc/subuid and /etc/subgid to function correctly")
+	}
+	options.UIDMap, options.GIDMap = nil, nil
+	uid, gid := 0, 0
+	for _, u := range uids {
+		options.UIDMap = append(options.UIDMap, idtools.IDMap{ContainerID: uid, HostID: uid + 1, Size: u.Size})
+		uid += u.Size
+	}
+	for _, g := range gids {
+		options.GIDMap = append(options.GIDMap, idtools.IDMap{ContainerID: gid, HostID: gid + 1, Size: g.Size})
+		gid += g.Size
+	}
+	return &options, 0, 0, nil
 }
 
 // ParseIDMapping takes idmappings and subuid and subgid maps and returns a storage mapping
@@ -414,7 +444,7 @@ func ParseIDMapping(mode namespaces.UsernsMode, uidMapSlice, gidMapSlice []strin
 		options.AutoUserNsOpts = *opts
 		return &options, nil
 	}
-	if mode.IsKeepID() {
+	if mode.IsKeepID() || mode.IsNoMap() {
 		options.HostUIDMapping = false
 		options.HostGIDMapping = false
 		return &options, nil
@@ -656,7 +686,7 @@ func CreateCidFile(cidfile string, id string) error {
 		if os.IsExist(err) {
 			return errors.Errorf("container id file exists. Ensure another container is not using it or delete %s", cidfile)
 		}
-		return errors.Errorf("error opening cidfile %s", cidfile)
+		return errors.Errorf("opening cidfile %s", cidfile)
 	}
 	if _, err = cidFile.WriteString(id); err != nil {
 		logrus.Error(err)
@@ -665,8 +695,8 @@ func CreateCidFile(cidfile string, id string) error {
 	return nil
 }
 
-// DefaultCPUPeriod is the default CPU period is 100us, which is the same default
-// as Kubernetes.
+// DefaultCPUPeriod is the default CPU period (100ms) in microseconds, which is
+// the same default as Kubernetes.
 const DefaultCPUPeriod uint64 = 100000
 
 // CoresToPeriodAndQuota converts a fraction of cores to the equivalent
@@ -722,4 +752,29 @@ func SocketPath() (string, error) {
 
 	// Glue the socket path together
 	return filepath.Join(xdg, "podman", "podman.sock"), nil
+}
+
+func LookupUser(name string) (*user.User, error) {
+	// Assume UID look up first, if it fails lookup by username
+	if u, err := user.LookupId(name); err == nil {
+		return u, nil
+	}
+	return user.Lookup(name)
+}
+
+// SizeOfPath determines the file usage of a given path. it was called volumeSize in v1
+// and now is made to be generic and take a path instead of a libpod volume
+func SizeOfPath(path string) (uint64, error) {
+	var size uint64
+	err := filepath.WalkDir(path, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			size += uint64(info.Size())
+		}
+		return err
+	})
+	return size, err
 }

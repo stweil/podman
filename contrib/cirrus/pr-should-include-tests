@@ -12,9 +12,6 @@ fi
 if [[ "${CIRRUS_CHANGE_MESSAGE}" =~ NO.NEW.TESTS.NEEDED ]]; then
     exit 0
 fi
-if [[ "${CIRRUS_CHANGE_MESSAGE}" =~ NO.TESTS.NEEDED ]]; then
-    exit 0
-fi
 
 # HEAD should be good enough, but the CIRRUS envariable allows us to test
 head=${CIRRUS_CHANGE_IN_REPO:-HEAD}
@@ -33,8 +30,7 @@ fi
 # Nothing changed under test subdirectory.
 #
 # This is OK if the only files being touched are "safe" ones.
-filtered_changes=$(git diff --name-status $base $head |
-                       awk '{print $2}'               |
+filtered_changes=$(git diff --name-only $base $head   |
                        fgrep -vx .cirrus.yml          |
                        fgrep -vx .gitignore           |
                        fgrep -vx Makefile             |
@@ -52,12 +48,9 @@ if [[ -z "$filtered_changes" ]]; then
     exit 0
 fi
 
-# One last chance: perhaps the developer included the magic '[NO (NEW) TESTS NEEDED]'
+# One last chance: perhaps the developer included the magic '[NO NEW TESTS NEEDED]'
 # string in an amended commit.
 if git log --format=%B ${base}..${head} | fgrep '[NO NEW TESTS NEEDED]'; then
-   exit 0
-fi
-if git log --format=%B ${base}..${head} | fgrep '[NO TESTS NEEDED]'; then
    exit 0
 fi
 

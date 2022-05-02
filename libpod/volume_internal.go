@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v4/libpod/define"
 	"github.com/pkg/errors"
 )
 
@@ -52,6 +52,9 @@ func (v *Volume) needsMount() bool {
 	if _, ok := v.config.Options["SIZE"]; ok {
 		index++
 	}
+	if _, ok := v.config.Options["NOQUOTA"]; ok {
+		index++
+	}
 	// when uid or gid is set there is also the "o" option
 	// set so we have to ignore this one as well
 	if index > 0 {
@@ -81,7 +84,7 @@ func (v *Volume) save() error {
 func (v *Volume) refresh() error {
 	lock, err := v.runtime.lockManager.AllocateAndRetrieveLock(v.config.LockID)
 	if err != nil {
-		return errors.Wrapf(err, "error acquiring lock %d for volume %s", v.config.LockID, v.Name())
+		return errors.Wrapf(err, "acquiring lock %d for volume %s", v.config.LockID, v.Name())
 	}
 	v.lock = lock
 

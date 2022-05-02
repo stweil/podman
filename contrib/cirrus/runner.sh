@@ -12,7 +12,7 @@ set -eo pipefail
 # most notably:
 #
 #    PODBIN_NAME  : "podman" (i.e. local) or "remote"
-#    TEST_ENVIRON : 'host' or 'container'; desired environment in which to run
+#    TEST_ENVIRON : 'host', or 'container'; desired environment in which to run
 #    CONTAINER    : 1 if *currently* running inside a container, 0 if host
 #
 
@@ -46,6 +46,8 @@ function _run_validate() {
 }
 
 function _run_unit() {
+    _bail_if_test_can_be_skipped test/goecho test/version
+
     # shellcheck disable=SC2154
     if [[ "$PODBIN_NAME" != "podman" ]]; then
         # shellcheck disable=SC2154
@@ -55,26 +57,48 @@ function _run_unit() {
 }
 
 function _run_apiv2() {
-    make localapiv2 |& logformatter
+    _bail_if_test_can_be_skipped test/apiv2
+
+    (
+        make localapiv2-bash
+        source .venv/requests/bin/activate
+        make localapiv2-python
+    ) |& logformatter
 }
 
 function _run_compose() {
+    _bail_if_test_can_be_skipped test/compose
+
+    ./test/compose/test-compose |& logformatter
+}
+
+function _run_compose_v2() {
+    _bail_if_test_can_be_skipped test/compose
+
     ./test/compose/test-compose |& logformatter
 }
 
 function _run_int() {
+    _bail_if_test_can_be_skipped test/e2e
+
     dotest integration
 }
 
 function _run_sys() {
+    _bail_if_test_can_be_skipped test/system
+
     dotest system
 }
 
 function _run_upgrade_test() {
+    _bail_if_test_can_be_skipped test/upgrade
+
     bats test/upgrade |& logformatter
 }
 
 function _run_bud() {
+    _bail_if_test_can_be_skipped test/buildah-bud
+
     ./test/buildah-bud/run-buildah-bud-tests |& logformatter
 }
 
@@ -82,13 +106,21 @@ function _run_bindings() {
     # shellcheck disable=SC2155
     export PATH=$PATH:$GOSRC/hack
 
+    # if logformatter sees this, it can link directly to failing source lines
+    local gitcommit_magic=
+    if [[ -n "$GIT_COMMIT" ]]; then
+        gitcommit_magic="/define.gitCommit=${GIT_COMMIT}"
+    fi
+
     # Subshell needed so logformatter will write output in cwd; if it runs in
     # the subdir, .cirrus.yml will not find the html'ized log
-    (cd pkg/bindings/test && ginkgo -trace -noColor -debug  -r) |& logformatter
+    (cd pkg/bindings/test && \
+         echo "$gitcommit_magic" && \
+         ginkgo -progress -trace -noColor -debug -timeout 30m -r -v) |& logformatter
 }
 
 function _run_docker-py() {
-    source venv/bin/activate
+    source .venv/docker-py/bin/activate
     make run-docker-py-tests
 }
 
@@ -117,6 +149,7 @@ exec_container() {
     set -x
     # shellcheck disable=SC2154
     exec podman run --rm --privileged --net=host --cgroupns=host \
+        -v `mktemp -d -p /var/tmp`:/tmp:Z \
         -v /dev/fuse:/dev/fuse \
         -v "$GOPATH:$GOPATH:Z" \
         --workdir "$GOSRC" \
@@ -132,11 +165,8 @@ function _run_swagger() {
     local envvarsfile
     req_env_vars GCPJSON GCPNAME GCPPROJECT CTR_FQIN
 
-    # Building this is a PITA, just grab binary for use in automation
-    # Ref: https://goswagger.io/install.html#static-binary
-    download_url=$(\
-        curl -s https://api.github.com/repos/go-swagger/go-swagger/releases/latest | \
-        jq -r '.assets[] | select(.name | contains("linux_amd64")) | .browser_download_url')
+    [[ -x /usr/local/bin/swagger ]] || \
+        die "Expecting swagger binary to be present and executable."
 
     # The filename and bucket depend on the automation context
     #shellcheck disable=SC2154,SC2153
@@ -156,9 +186,6 @@ function _run_swagger() {
     else
         die "Unknown execution context, expected a non-empty value for \$CIRRUS_TAG, \$CIRRUS_BRANCH, or \$CIRRUS_PR"
     fi
-
-    curl -s -o /usr/local/bin/swagger -L'#' "$download_url"
-    chmod +x /usr/local/bin/swagger
 
     # Swagger validation takes a significant amount of time
     msg "Pulling \$CTR_FQIN '$CTR_FQIN' (background process)"
@@ -209,6 +236,9 @@ function _run_build() {
 }
 
 function _run_altbuild() {
+    # We can skip all these steps for test-only PRs, but not doc-only ones
+    _bail_if_test_can_be_skipped docs
+
     local -a arches
     local arch
     req_env_vars ALT_NAME
@@ -220,7 +250,17 @@ function _run_altbuild() {
     case "$ALT_NAME" in
         *Each*)
             git fetch origin
-            make build-all-new-commits GIT_BASE_BRANCH=origin/$DEST_BRANCH
+            # The check-size script, introduced 2022-03-22 in #13518,
+            # runs 'make' (the original purpose of this check) against
+            # each commit, then checks image sizes to make sure that
+            # none have grown beyond a given limit. That of course
+            # requires a baseline, which is why we use '^' to start
+            # with the *parent* commit of this PR, not the first commit.
+            context_dir=$(mktemp -d --tmpdir make-size-check.XXXXXXX)
+            make build-all-new-commits \
+                 GIT_BASE_BRANCH=origin/"${DEST_BRANCH}^" \
+                 MAKE="hack/make-and-check-size $context_dir"
+            rm -rf $context_dir
             ;;
         *Windows*)
             make podman-remote-release-windows_amd64.zip
@@ -230,8 +270,7 @@ function _run_altbuild() {
             make build-no-cgo
             ;;
         *RPM*)
-            make -f ./.copr/Makefile
-            rpmbuild --rebuild ./podman-*.src.rpm
+            make package
             ;;
         Alt*Cross)
             arches=(\
@@ -249,20 +288,6 @@ function _run_altbuild() {
                 msg "Building release archive for $arch"
                 make podman-release-${arch}.tar.gz GOARCH=$arch
             done
-            ;;
-        *Static*)
-            req_env_vars CTR_FQIN
-            [[ "$UID" -eq 0 ]] || \
-                die "Static build must execute nixos container as root on host"
-            podman run -i --rm \
-                -e CACHIX_AUTH_TOKEN \
-                -v $PWD:$PWD:Z -w $PWD $CTR_FQIN sh -c \
-                "nix-env -iA cachix -f https://cachix.org/api/v1/install && \
-                 cachix use podman && \
-                 nix-build nix && \
-                 nix-store -qR --include-outputs \$(nix-instantiate nix/default.nix) | grep -v podman | cachix push podman && \
-                 cp -R result/bin ."
-            rm result  # makes cirrus puke
             ;;
         *)
             die "Unknown/Unsupported \$$ALT_NAME '$ALT_NAME'"
@@ -342,6 +367,55 @@ dotest() {
         |& logformatter
 }
 
+# Optimization: will exit if the only PR diffs are under docs/ or tests/
+# with the exception of any given arguments. E.g., don't run e2e or upgrade
+# or bud tests if the only PR changes are in test/system.
+function _bail_if_test_can_be_skipped() {
+    local head base diffs
+
+    # Cirrus sets these for PRs but not branches or cron. In cron and branches,
+    #we never want to skip.
+    for v in CIRRUS_CHANGE_IN_REPO CIRRUS_PR; do
+        if [[ -z "${!v}" ]]; then
+            msg "[ _cannot do selective skip: \$$v is undefined ]"
+            return 0
+        fi
+    done
+    # And if this one *is* defined, it means we're not in PR-land; don't skip.
+    if [[ -n "$CIRRUS_TAG" ]]; then
+        msg "[ _cannot do selective skip: \$CIRRUS_TAG is defined ]"
+        return 0
+    fi
+
+    head=$CIRRUS_CHANGE_IN_REPO
+    base=$(git merge-base $DEST_BRANCH $head)
+    diffs=$(git diff --name-only $base $head)
+
+    # If PR touches any files in an argument directory, we cannot skip
+    for subdir in "$@"; do
+        if egrep -q "^$subdir/" <<<"$diffs"; then
+            return 0
+        fi
+    done
+
+    # PR does not touch any files under our input directories. Now see
+    # if the PR touches files outside of the following directories, by
+    # filtering these out from the diff results.
+    for subdir in docs test; do
+        # || true needed because we're running with set -e
+        diffs=$(egrep -v "^$subdir/" <<<"$diffs" || true)
+    done
+
+    # If we still have diffs, they indicate files outside of docs & test.
+    # It is not safe to skip.
+    if [[ -n "$diffs" ]]; then
+        return 0
+    fi
+
+    msg "SKIPPING: This is a doc- and/or test-only PR with no changes under $*"
+    exit 0
+}
+
 # Nearly every task in .cirrus.yml makes use of this shell script
 # wrapped by /usr/bin/time to collect runtime statistics.  Because the
 # --output option is used to log stats to a file, every child-process
@@ -374,6 +448,13 @@ if [[ "$PRIV_NAME" == "rootless" ]] && [[ "$UID" -eq 0 ]]; then
     # We have to test that it works without this directory.
     # https://github.com/containers/podman/issues/10857
     rm -rf /var/lib/cni
+
+    # This must be done at the last second, otherwise `make` calls
+    # in setup_environment (as root) will balk about ownership.
+    msg "Recursively chowning \$GOPATH and \$GOSRC to $ROOTLESS_USER"
+    if [[ $PRIV_NAME = "rootless" ]]; then
+        chown -R $ROOTLESS_USER:$ROOTLESS_USER "$GOPATH" "$GOSRC"
+    fi
 
     req_env_vars ROOTLESS_USER
     msg "Re-executing runner through ssh as user '$ROOTLESS_USER'"

@@ -1,7 +1,7 @@
 % podman-network-create(1)
 
 ## NAME
-podman\-network-create - Create a Podman CNI network
+podman\-network-create - Create a Podman network
 
 ## SYNOPSIS
 **podman network create**  [*options*] name
@@ -28,6 +28,45 @@ resolution.
 Driver to manage the network. Currently `bridge`, `macvlan` and `ipvlan` are supported. Defaults to `bridge`.
 As rootless the `macvlan` and `ipvlan` driver have no access to the host network interfaces because rootless networking requires a separate network namespace.
 
+Special considerations for the *netavark* backend:
+- The `macvlan` driver requires the `--subnet` option, DHCP is currently not supported.
+- The `ipvlan` driver is not currently supported.
+
+#### **--gateway**
+
+Define a gateway for the subnet. If you want to provide a gateway address, you must also provide a
+*subnet* option. Can be specified multiple times.
+The argument order of the **--subnet**, **--gateway** and **--ip-range** options must match.
+
+#### **--internal**
+
+Restrict external access of this network. Note when using this option, the dnsname plugin will be
+automatically disabled.
+
+#### **--ip-range**
+
+Allocate container IP from a range.  The range must be a complete subnet and in CIDR notation.  The *ip-range* option
+must be used with a *subnet* option. Can be specified multiple times.
+The argument order of the **--subnet**, **--gateway** and **--ip-range** options must match.
+
+#### **--ipam-driver**=*driver*
+
+Set the ipam driver (IP Address Management Driver) for the network. When unset podman will choose an
+ipam driver automatically based on the network driver. Valid values are:
+ - `host-local`: IP addresses are assigned locally.
+ - `dhcp`: IP addresses are assigned from a dhcp server on your network. This driver is not yet supported with netavark.
+ - `none`: No ip addresses are assigned to the interfaces.
+
+You can see the driver in the **podman network inspect** output under the `ipam_options` field.
+
+#### **--ipv6**
+
+Enable IPv6 (Dual Stack) networking. If not subnets are given it will allocate a ipv4 and ipv6 subnet.
+
+#### **--label**
+
+Set metadata for a network (e.g., --label mykey=value).
+
 #### **--opt**=*option*, **-o**
 
 Set driver specific options.
@@ -39,36 +78,15 @@ Additionally the `bridge` driver supports the following option:
 
 The `macvlan` and `ipvlan` driver support the following options:
 - `parent`: The host device which should be used for the macvlan interface. Defaults to the default route interface.
-- `mode`: This options sets the specified ip/macvlan mode on the interface.
+- `mode`: This option sets the specified ip/macvlan mode on the interface.
   - Supported values for `macvlan` are `bridge`, `private`, `vepa`, `passthru`. Defaults to `bridge`.
   - Supported values for `ipvlan` are `l2`, `l3`, `l3s`. Defaults to `l2`.
 
-#### **--gateway**
-
-Define a gateway for the subnet. If you want to provide a gateway address, you must also provide a
-*subnet* option.
-
-#### **--internal**
-
-Restrict external access of this network. Note when using this option, the dnsname plugin will be
-automatically disabled.
-
-#### **--ip-range**
-
-Allocate container IP from a range.  The range must be a complete subnet and in CIDR notation.  The *ip-range* option
-must be used with a *subnet* option.
-
-#### **--label**
-
-Set metadata for a network (e.g., --label mykey=value).
-
 #### **--subnet**
 
-The subnet in CIDR notation.
-
-#### **--ipv6**
-
-Enable IPv6 (Dual Stack) networking.
+The subnet in CIDR notation. Can be specified multiple times to allocate more than one subnet for this network.
+The argument order of the **--subnet**, **--gateway** and **--ip-range** options must match.
+This is useful to set a static ipv4 and ipv6 subnet.
 
 ## EXAMPLE
 
@@ -102,9 +120,15 @@ $ podman network create --subnet 192.168.55.0/24 --ip-range 192.168.55.128/25
 cni-podman5
 ```
 
+Create a network with a static ipv4 and ipv6 subnet and set a gateway.
+```
+$ podman network create --subnet 192.168.55.0/24 --gateway 192.168.55.3 --subnet fd52:2a5a:747e:3acd::/64 --gateway fd52:2a5a:747e:3acd::10
+podman4
+```
+
 Create a Macvlan based network using the host interface eth0. Macvlan networks can only be used as root.
 ```
-# podman network create -d macvlan -o parent=eth0 newnet
+# podman network create -d macvlan -o parent=eth0 --subnet 192.5.0.0/16 newnet
 newnet
 ```
 

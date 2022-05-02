@@ -9,7 +9,7 @@ podman\-machine\-ssh - SSH into a virtual machine
 ## DESCRIPTION
 
 SSH into a Podman-managed virtual machine and optionally execute a command
-on the virtual machine.  Unless using the default virtual machine, the
+on the virtual machine. Unless using the default virtual machine, the
 first argument must be the virtual machine name. The optional command to
 execute can then follow. If no command is provided, an interactive session
 with the virtual machine is established.
@@ -49,7 +49,7 @@ $ podman machine ssh  myvm rpm -q podman
 ```
 
 ## SEE ALSO
-podman-machine (1)
+**[podman(1)](podman.1.md)**, **[podman-machine(1)](podman-machine.1.md)**
 
 ## HISTORY
 March 2021, Originally compiled by Ashley Cui <acui@redhat.com>

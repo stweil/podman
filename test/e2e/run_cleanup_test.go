@@ -3,7 +3,7 @@ package integration
 import (
 	"os"
 
-	. "github.com/containers/podman/v3/test/utils"
+	. "github.com/containers/podman/v4/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
@@ -23,7 +23,8 @@ var _ = Describe("Podman run exit", func() {
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.RestoreArtifact(ALPINE)
+		err = podmanTest.RestoreArtifact(ALPINE)
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -35,7 +36,7 @@ var _ = Describe("Podman run exit", func() {
 
 	It("podman run -d mount cleanup test", func() {
 		SkipIfRemote("podman-remote does not support mount")
-		SkipIfRootless("FIXME podman mount requires podman unshare first")
+		SkipIfRootless("TODO rootless podman mount requires podman unshare first")
 
 		result := podmanTest.Podman([]string{"run", "-dt", ALPINE, "top"})
 		result.WaitWithDefaultTimeout()

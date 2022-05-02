@@ -20,7 +20,7 @@ Images are pushed from those stored in local image storage.
 
 ## DESTINATION
 
- DESTINATION is the location the container image is pushed to. It supports all transports from `containers-transports(5)`. If no transport is specified, the `docker` (i.e., container registry) transport is used.  For remote clients, `docker` is the only supported transport.
+ DESTINATION is the location the container image is pushed to. It supports all transports from `containers-transports(5)`. If no transport is specified, the `docker` (i.e., container registry) transport is used.  For remote clients, including Mac and Windows (excluding WSL2) machines, `docker` is the only supported transport.
 
 ```
 # Push to a container registry
@@ -55,25 +55,29 @@ If the authorization state is not found there, $HOME/.docker/config.json is chec
 Note: You can also override the default path of the authentication file by setting the REGISTRY\_AUTH\_FILE
 environment variable. `export REGISTRY_AUTH_FILE=path`
 
-#### **--creds**=*[username[:password]]*
-
-The [username[:password]] to use to authenticate with the registry if required.
-If one or both values are not supplied, a command line prompt will appear and the
-value can be entered.  The password is entered without echo.
-
 #### **--cert-dir**=*path*
 
-Use certificates at *path* (\*.crt, \*.cert, \*.key) to connect to the registry.
-Please refer to containers-certs.d(5) for details. (This option is not available with the remote Podman client)
+Use certificates at *path* (\*.crt, \*.cert, \*.key) to connect to the registry. (Default: /etc/containers/certs.d)
+Please refer to containers-certs.d(5) for details. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--compress**
 
 Compress tarball image layers when pushing to a directory using the 'dir' transport. (default is same compression type, compressed or uncompressed, as source)
 Note: This flag can only be set when using the **dir** transport
 
+#### **--compression-format** *COMPRESSION*
+
+Specifies the compression format to use.  Supported values are: `gzip`, `zstd` and `zstd:chunked`.  The default is `gzip`.
+
+#### **--creds**=*[username[:password]]*
+
+The [username[:password]] to use to authenticate with the registry if required.
+If one or both values are not supplied, a command line prompt will appear and the
+value can be entered.  The password is entered without echo.
+
 #### **--digestfile** *Digestfile*
 
-After copying the image, write the digest of the resulting image to the file.  (This option is not available with the remote Podman client)
+After copying the image, write the digest of the resulting image to the file.  (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--disable-content-trust**
 
@@ -91,11 +95,11 @@ When writing the output image, suppress progress output
 
 #### **--remove-signatures**
 
-Discard any pre-existing signatures in the image. (This option is not available with the remote Podman client)
+Discard any pre-existing signatures in the image. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--sign-by**=*key*
 
-Add a signature at the destination using the specified key. (This option is not available with the remote Podman client)
+Add a signature at the destination using the specified key. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--tls-verify**
 
@@ -154,4 +158,4 @@ Storing signatures
 ```
 
 ## SEE ALSO
-podman(1), podman-pull(1), podman-login(1), containers-certs.d(5), containers-transports(5)
+**[podman(1)](podman.1.md)**, **[podman-pull(1)](podman-pull.1.md)**, **[podman-login(1)](podman-login.1.md)**, **[containers-certs.d(5)](https://github.com/containers/image/blob/main/docs/containers-certs.d.5.md)**, **[containers-registries.conf(5)](https://github.com/containers/image/blob/main/docs/containers-registries.conf.5.md)**, **[containers-transports(5)](https://github.com/containers/image/blob/main/docs/containers-transports.5.md)**

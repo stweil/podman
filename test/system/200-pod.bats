@@ -6,13 +6,7 @@ load helpers
 function teardown() {
     run_podman pod rm -f -t 0 -a
     run_podman rm -f -t 0 -a
-    run_podman image list --format '{{.ID}} {{.Repository}}'
-    while read id name; do
-        if [[ "$name" =~ /pause ]]; then
-            run_podman rmi $id
-        fi
-    done <<<"$output"
-
+    run_podman rmi --ignore $(pause_image)
     basic_teardown
 }
 
@@ -29,8 +23,7 @@ function teardown() {
 }
 
 @test "podman pod top - containers in different PID namespaces" {
-    # With infra=false, we don't get a /pause container (we also
-    # don't pull k8s.gcr.io/pause )
+    # With infra=false, we don't get a /pause container
     no_infra='--infra=false'
     run_podman pod create $no_infra
     podid="$output"
@@ -57,9 +50,31 @@ function teardown() {
     fi
 
     # Clean up
-    run_podman pod rm -f -t 0 $podid
+    run_podman --noout pod rm -f -t 0 $podid
+    is "$output" "" "output should be empty"
 }
 
+
+@test "podman pod create - custom infra image" {
+    skip_if_remote "CONTAINERS_CONF only effects server side"
+    image="i.do/not/exist:image"
+    tmpdir=$PODMAN_TMPDIR/pod-test
+    mkdir -p $tmpdir
+    containersconf=$tmpdir/containers.conf
+    cat >$containersconf <<EOF
+[engine]
+infra_image="$image"
+EOF
+
+    run_podman 125 pod create --infra-image $image
+    is "$output" ".*initializing source docker://$image:.*"
+
+    CONTAINERS_CONF=$containersconf run_podman 125 pod create
+    is "$output" ".*initializing source docker://$image:.*"
+
+    CONTAINERS_CONF=$containersconf run_podman 125 create --pod new:test $IMAGE
+    is "$output" ".*initializing source docker://$image:.*"
+}
 
 @test "podman pod - communicating between pods" {
     podname=pod$(random_string)
@@ -71,9 +86,7 @@ function teardown() {
 
     # (Assert that output is formatted, not a one-line blob: #8021)
     run_podman pod inspect $podname
-    if [[ "${#lines[*]}" -lt 10 ]]; then
-        die "Output from 'pod inspect' is only ${#lines[*]} lines; see #8011"
-    fi
+    assert "${#lines[*]}" -ge 10 "Output from 'pod inspect'; see #8011"
 
     # Randomly-assigned port in the 5xxx range
     port=$(random_free_port)
@@ -100,15 +113,8 @@ function teardown() {
     # Clean up. First the nc -l container...
     run_podman rm $cid1
 
-    # ...then, from pause container, find the image ID of the pause image...
-    run_podman pod inspect --format '{{(index .Containers 0).ID}}' $podname
-    pause_cid="$output"
-    run_podman container inspect --format '{{.Image}}' $pause_cid
-    pause_iid="$output"
-
     # ...then rm the pod, then rmi the pause image so we don't leave strays.
     run_podman pod rm $podname
-    run_podman rmi $pause_iid
 
     # Pod no longer exists
     run_podman 1 pod exists $podid
@@ -240,9 +246,11 @@ EOF
 
     run_podman run --rm --pod mypod $IMAGE hostname
     is "$output" "$hostname" "--hostname set the hostname"
+    run_podman 125 run --rm --pod mypod --hostname foobar $IMAGE hostname
+    is "$output" ".*invalid config provided: cannot set hostname when joining the pod UTS namespace: invalid configuration" "--hostname should not be allowed in share UTS pod"
 
     run_podman run --rm --pod $pod_id $IMAGE cat /etc/hosts
-    is "$output" ".*$add_host_ip $add_host_n" "--add-host was added"
+    is "$output" ".*$add_host_ip[[:blank:]]$add_host_n" "--add-host was added"
     is "$output" ".*	$hostname"            "--hostname is in /etc/hosts"
     #               ^^^^ this must be a tab, not a space
 
@@ -303,16 +311,102 @@ EOF
     run_podman rm $cid
     run_podman pod rm -t 0 -f mypod
     run_podman rmi $infra_image
-
 }
 
 @test "podman pod create should fail when infra-name is already in use" {
     local infra_name="infra_container_$(random_string 10 | tr A-Z a-z)"
-    run_podman pod create --infra-name "$infra_name"
-    run_podman '?' pod create --infra-name "$infra_name"
-    if [ $status -eq 0 ]; then
-        die "Podman should fail when user try to create two pods with the same infra-name value"
-    fi
+    local infra_image="k8s.gcr.io/pause:3.5"
+    local pod_name="$(random_string 10 | tr A-Z a-z)"
+
+    run_podman --noout pod create --name $pod_name --infra-name "$infra_name" --infra-image "$infra_image"
+    is "$output" "" "output from pod create should be empty"
+
+    run_podman 125 pod create --infra-name "$infra_name"
+    assert "$output" =~ "^Error: .*: the container name \"$infra_name\" is already in use by .* You have to remove that container to be able to reuse that name.: that name is already in use" \
+           "Trying to create two pods with same infra-name"
+
+    run_podman pod rm -f $pod_name
+    run_podman rmi $infra_image
+}
+
+@test "podman pod create --share" {
+    local pod_name="$(random_string 10 | tr A-Z a-z)"
+    run_podman 125 pod create --share bogus --name $pod_name
+    is "$output" ".*Invalid kernel namespace to share: bogus. Options are: cgroup, ipc, net, pid, uts or none" \
+       "pod test for bogus --share option"
+    run_podman pod create --share ipc --name $pod_name
+    run_podman run --rm --pod $pod_name --hostname foobar $IMAGE hostname
+    is "$output" "foobar" "--hostname should work with non share UTS namespace"
+}
+
+@test "podman pod create --pod new:$POD --hostname" {
+    local pod_name="$(random_string 10 | tr A-Z a-z)"
+    run_podman run --rm --pod "new:$pod_name" --hostname foobar $IMAGE hostname
+    is "$output" "foobar" "--hostname should work when creating a new:pod"
+    run_podman pod rm $pod_name
+    run_podman run --rm --pod "new:$pod_name" $IMAGE hostname
+    is "$output" "$pod_name" "new:POD should have hostname name set to podname"
+}
+
+@test "podman rm --force to remove infra container" {
+    local pod_name="$(random_string 10 | tr A-Z a-z)"
+    run_podman create --pod "new:$pod_name" $IMAGE
+    container_ID="$output"
+    run_podman pod inspect --format "{{.InfraContainerID}}" $pod_name
+    infra_ID="$output"
+
+    run_podman 125 container rm $infra_ID
+    is "$output" ".* and cannot be removed without removing the pod"
+    run_podman 125 container rm --force $infra_ID
+    is "$output" ".* and cannot be removed without removing the pod"
+
+    run_podman container rm --depend $infra_ID
+    is "$output" ".*$infra_ID.*"
+    is "$output" ".*$container_ID.*"
+
+    # Now make sure that --force --all works as well
+    run_podman create --pod "new:$pod_name" $IMAGE
+    container_1_ID="$output"
+    run_podman create --pod "$pod_name" $IMAGE
+    container_2_ID="$output"
+    run_podman create $IMAGE
+    container_3_ID="$output"
+    run_podman pod inspect --format "{{.InfraContainerID}}" $pod_name
+    infra_ID="$output"
+
+    run_podman container rm --force --all $infraID
+    is "$output" ".*$infra_ID.*"
+    is "$output" ".*$container_1_ID.*"
+    is "$output" ".*$container_2_ID.*"
+    is "$output" ".*$container_3_ID.*"
+}
+
+@test "podman pod create share net" {
+    run_podman pod create --name test
+    run_podman pod inspect test --format {{.InfraConfig.HostNetwork}}
+    is "$output" "false" "Default network sharing should be false"
+    run_podman pod rm test
+
+    run_podman pod create --name test --share ipc  --network private
+    run_podman pod inspect test --format {{.InfraConfig.HostNetwork}}
+    is "$output" "false" "Private network sharing with only ipc should be false"
+    run_podman pod rm test
+
+    run_podman pod create --name test --share net  --network private
+    run_podman pod inspect test --format {{.InfraConfig.HostNetwork}}
+    is "$output" "false" "Private network sharing with only net should be false"
+    run_podman pod rm test
+
+    run_podman pod create --name test --share net --network host
+    run_podman pod inspect test --format {{.InfraConfig.HostNetwork}}
+    is "$output" "true" "Host network sharing with only net should be true"
+    run_podman pod rm test
+
+    run_podman pod create --name test --share ipc --network host
+    run_podman pod inspect test --format {{.InfraConfig.HostNetwork}}
+    is "$output" "true" "Host network sharing with only ipc should be true"
+    run_podman pod rm test
+
 }
 
 # vim: filetype=sh

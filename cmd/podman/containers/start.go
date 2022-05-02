@@ -5,12 +5,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/cmd/podman/utils"
-	"github.com/containers/podman/v3/cmd/podman/validate"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/domain/entities"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/cmd/podman/utils"
+	"github.com/containers/podman/v4/cmd/podman/validate"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -122,7 +122,7 @@ func start(cmd *cobra.Command, args []string) error {
 		startOptions.Stdout = os.Stdout
 	}
 
-	var containers []string = args
+	containers := args
 	if len(filters) > 0 {
 		for _, f := range filters {
 			split := strings.SplitN(f, "=", 2)

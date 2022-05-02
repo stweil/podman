@@ -6,30 +6,32 @@ import (
 	"io/ioutil"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/containers/buildah"
+	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/manifest"
-	"github.com/containers/podman/v3/libpod"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/libpod/events"
-	"github.com/containers/podman/v3/libpod/logs"
-	"github.com/containers/podman/v3/pkg/cgroups"
-	"github.com/containers/podman/v3/pkg/checkpoint"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/domain/entities/reports"
-	dfilters "github.com/containers/podman/v3/pkg/domain/filters"
-	"github.com/containers/podman/v3/pkg/domain/infra/abi/terminal"
-	"github.com/containers/podman/v3/pkg/errorhandling"
-	parallelctr "github.com/containers/podman/v3/pkg/parallel/ctr"
-	"github.com/containers/podman/v3/pkg/ps"
-	"github.com/containers/podman/v3/pkg/rootless"
-	"github.com/containers/podman/v3/pkg/signal"
-	"github.com/containers/podman/v3/pkg/specgen"
-	"github.com/containers/podman/v3/pkg/specgen/generate"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/podman/v4/libpod"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/libpod/events"
+	"github.com/containers/podman/v4/libpod/logs"
+	"github.com/containers/podman/v4/pkg/checkpoint"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/domain/entities/reports"
+	dfilters "github.com/containers/podman/v4/pkg/domain/filters"
+	"github.com/containers/podman/v4/pkg/domain/infra/abi/terminal"
+	"github.com/containers/podman/v4/pkg/errorhandling"
+	parallelctr "github.com/containers/podman/v4/pkg/parallel/ctr"
+	"github.com/containers/podman/v4/pkg/ps"
+	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v4/pkg/signal"
+	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v4/pkg/specgen/generate"
+	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v4/pkg/util"
 	"github.com/containers/storage"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -300,27 +302,27 @@ func (ic *ContainerEngine) removeContainer(ctx context.Context, ctr *libpod.Cont
 	return err
 }
 
-func (ic *ContainerEngine) ContainerRm(ctx context.Context, namesOrIds []string, options entities.RmOptions) ([]*entities.RmReport, error) {
-	reports := []*entities.RmReport{}
+func (ic *ContainerEngine) ContainerRm(ctx context.Context, namesOrIds []string, options entities.RmOptions) ([]*reports.RmReport, error) {
+	rmReports := []*reports.RmReport{}
 
 	names := namesOrIds
 	// Attempt to remove named containers directly from storage, if container is defined in libpod
 	// this will fail and code will fall through to removing the container from libpod.`
 	tmpNames := []string{}
 	for _, ctr := range names {
-		report := entities.RmReport{Id: ctr}
+		report := reports.RmReport{Id: ctr}
 		report.Err = ic.Libpod.RemoveStorageContainer(ctr, options.Force)
 		switch errors.Cause(report.Err) {
 		case nil:
 			// remove container names that we successfully deleted
-			reports = append(reports, &report)
+			rmReports = append(rmReports, &report)
 		case define.ErrNoSuchCtr, define.ErrCtrExists:
 			// There is still a potential this is a libpod container
 			tmpNames = append(tmpNames, ctr)
 		default:
 			if _, err := ic.Libpod.LookupContainer(ctr); errors.Cause(err) == define.ErrNoSuchCtr {
 				// remove container failed, but not a libpod container
-				reports = append(reports, &report)
+				rmReports = append(rmReports, &report)
 				continue
 			}
 			// attempt to remove as a libpod container
@@ -339,36 +341,79 @@ func (ic *ContainerEngine) ContainerRm(ctx context.Context, namesOrIds []string,
 
 		for _, ctr := range names {
 			logrus.Debugf("Evicting container %q", ctr)
-			report := entities.RmReport{Id: ctr}
+			report := reports.RmReport{Id: ctr}
 			_, err := ic.Libpod.EvictContainer(ctx, ctr, options.Volumes)
 			if err != nil {
 				if options.Ignore && errors.Cause(err) == define.ErrNoSuchCtr {
 					logrus.Debugf("Ignoring error (--allow-missing): %v", err)
-					reports = append(reports, &report)
+					rmReports = append(rmReports, &report)
 					continue
 				}
 				report.Err = err
-				reports = append(reports, &report)
+				rmReports = append(rmReports, &report)
 				continue
 			}
-			reports = append(reports, &report)
+			rmReports = append(rmReports, &report)
 		}
-		return reports, nil
+		return rmReports, nil
+	}
+
+	alreadyRemoved := make(map[string]bool)
+	addReports := func(newReports []*reports.RmReport) {
+		for i := range newReports {
+			alreadyRemoved[newReports[i].Id] = true
+			rmReports = append(rmReports, newReports[i])
+		}
+	}
+	if !options.All && options.Depend {
+		// Add additional containers based on dependencies to container map
+		for _, ctr := range ctrs {
+			if alreadyRemoved[ctr.ID()] {
+				continue
+			}
+			reports, err := ic.Libpod.RemoveDepend(ctx, ctr, options.Force, options.Volumes, options.Timeout)
+			if err != nil {
+				return rmReports, err
+			}
+			addReports(reports)
+		}
+		return rmReports, nil
+	}
+
+	// If --all is set, make sure to remove the infra containers'
+	// dependencies before doing the parallel removal below.
+	if options.All {
+		for _, ctr := range ctrs {
+			if alreadyRemoved[ctr.ID()] || !ctr.IsInfra() {
+				continue
+			}
+			reports, err := ic.Libpod.RemoveDepend(ctx, ctr, options.Force, options.Volumes, options.Timeout)
+			if err != nil {
+				return rmReports, err
+			}
+			addReports(reports)
+		}
 	}
 
 	errMap, err := parallelctr.ContainerOp(ctx, ctrs, func(c *libpod.Container) error {
+		if alreadyRemoved[c.ID()] {
+			return nil
+		}
 		return ic.removeContainer(ctx, c, options)
 	})
 	if err != nil {
 		return nil, err
 	}
 	for ctr, err := range errMap {
-		report := new(entities.RmReport)
+		if alreadyRemoved[ctr.ID()] {
+			continue
+		}
+		report := new(reports.RmReport)
 		report.Id = ctr.ID()
 		report.Err = err
-		reports = append(reports, report)
+		rmReports = append(rmReports, report)
 	}
-	return reports, nil
+	return rmReports, nil
 }
 
 func (ic *ContainerEngine) ContainerInspect(ctx context.Context, namesOrIds []string, options entities.InspectOptions) ([]*entities.ContainerInspectReport, []error, error) {
@@ -484,6 +529,7 @@ func (ic *ContainerEngine) ContainerCommit(ctx context.Context, nameOrID string,
 		Message:        options.Message,
 		Changes:        options.Changes,
 		Author:         options.Author,
+		Squash:         options.Squash,
 	}
 	newImage, err := ctr.Commit(ctx, options.ImageName, opts)
 	if err != nil {
@@ -515,6 +561,9 @@ func (ic *ContainerEngine) ContainerCheckpoint(ctx context.Context, namesOrIds [
 		PreCheckPoint:  options.PreCheckPoint,
 		WithPrevious:   options.WithPrevious,
 		Compression:    options.Compression,
+		PrintStats:     options.PrintStats,
+		FileLocks:      options.FileLocks,
+		CreateImage:    options.CreateImage,
 	}
 
 	if options.All {
@@ -531,10 +580,12 @@ func (ic *ContainerEngine) ContainerCheckpoint(ctx context.Context, namesOrIds [
 	}
 	reports := make([]*entities.CheckpointReport, 0, len(cons))
 	for _, con := range cons {
-		err = con.Checkpoint(ctx, checkOpts)
+		criuStatistics, runtimeCheckpointDuration, err := con.Checkpoint(ctx, checkOpts)
 		reports = append(reports, &entities.CheckpointReport{
-			Err: err,
-			Id:  con.ID(),
+			Err:             err,
+			Id:              con.ID(),
+			RuntimeDuration: runtimeCheckpointDuration,
+			CRIUStatistics:  criuStatistics,
 		})
 	}
 	return reports, nil
@@ -542,8 +593,9 @@ func (ic *ContainerEngine) ContainerCheckpoint(ctx context.Context, namesOrIds [
 
 func (ic *ContainerEngine) ContainerRestore(ctx context.Context, namesOrIds []string, options entities.RestoreOptions) ([]*entities.RestoreReport, error) {
 	var (
-		cons []*libpod.Container
-		err  error
+		containers                  []*libpod.Container
+		checkpointImageImportErrors []error
+		err                         error
 	)
 
 	restoreOptions := libpod.ContainerCheckpointOptions{
@@ -557,6 +609,7 @@ func (ic *ContainerEngine) ContainerRestore(ctx context.Context, namesOrIds []st
 		IgnoreStaticMAC: options.IgnoreStaticMAC,
 		ImportPrevious:  options.ImportPrevious,
 		Pod:             options.Pod,
+		PrintStats:      options.PrintStats,
 	}
 
 	filterFuncs := []libpod.ContainerFilter{
@@ -568,23 +621,68 @@ func (ic *ContainerEngine) ContainerRestore(ctx context.Context, namesOrIds []st
 
 	switch {
 	case options.Import != "":
-		cons, err = checkpoint.CRImportCheckpoint(ctx, ic.Libpod, options)
+		containers, err = checkpoint.CRImportCheckpointTar(ctx, ic.Libpod, options)
 	case options.All:
-		cons, err = ic.Libpod.GetContainers(filterFuncs...)
+		containers, err = ic.Libpod.GetContainers(filterFuncs...)
+	case options.Latest:
+		containers, err = getContainersByContext(false, options.Latest, namesOrIds, ic.Libpod)
 	default:
-		cons, err = getContainersByContext(false, options.Latest, namesOrIds, ic.Libpod)
+		for _, nameOrID := range namesOrIds {
+			logrus.Debugf("lookup container: %q", nameOrID)
+			ctr, err := ic.Libpod.LookupContainer(nameOrID)
+			if err == nil {
+				containers = append(containers, ctr)
+			} else {
+				// If container was not found, check if this is a checkpoint image
+				logrus.Debugf("lookup image: %q", nameOrID)
+				img, _, err := ic.Libpod.LibimageRuntime().LookupImage(nameOrID, nil)
+				if err != nil {
+					return nil, fmt.Errorf("no such container or image: %s", nameOrID)
+				}
+				restoreOptions.CheckpointImageID = img.ID()
+				mountPoint, err := img.Mount(ctx, nil, "")
+				defer func() {
+					if err := img.Unmount(true); err != nil {
+						logrus.Errorf("Failed to unmount image: %v", err)
+					}
+				}()
+				if err != nil {
+					return nil, err
+				}
+				importedContainers, err := checkpoint.CRImportCheckpoint(ctx, ic.Libpod, options, mountPoint)
+				if err != nil {
+					// CRImportCheckpoint is expected to import exactly one container from checkpoint image
+					checkpointImageImportErrors = append(
+						checkpointImageImportErrors,
+						errors.Errorf("unable to import checkpoint from image: %q: %v", nameOrID, err),
+					)
+				} else {
+					containers = append(containers, importedContainers[0])
+				}
+			}
+		}
 	}
 	if err != nil {
 		return nil, err
 	}
-	reports := make([]*entities.RestoreReport, 0, len(cons))
-	for _, con := range cons {
-		err := con.Restore(ctx, restoreOptions)
+
+	reports := make([]*entities.RestoreReport, 0, len(containers))
+	for _, con := range containers {
+		criuStatistics, runtimeRestoreDuration, err := con.Restore(ctx, restoreOptions)
 		reports = append(reports, &entities.RestoreReport{
-			Err: err,
-			Id:  con.ID(),
+			Err:             err,
+			Id:              con.ID(),
+			RuntimeDuration: runtimeRestoreDuration,
+			CRIUStatistics:  criuStatistics,
 		})
 	}
+
+	for _, importErr := range checkpointImageImportErrors {
+		reports = append(reports, &entities.RestoreReport{
+			Err: importErr,
+		})
+	}
+
 	return reports, nil
 }
 
@@ -597,7 +695,7 @@ func (ic *ContainerEngine) ContainerCreate(ctx context.Context, s *specgen.SpecG
 	for _, w := range warn {
 		fmt.Fprintf(os.Stderr, "%s\n", w)
 	}
-	rtSpec, spec, opts, err := generate.MakeContainer(context.Background(), ic.Libpod, s)
+	rtSpec, spec, opts, err := generate.MakeContainer(context.Background(), ic.Libpod, s, false, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -650,7 +748,7 @@ func makeExecConfig(options entities.ExecOptions, rt *libpod.Runtime) (*libpod.E
 		return nil, errors.Wrapf(err, "error retrieving Libpod configuration to build exec exit command")
 	}
 	// TODO: Add some ability to toggle syslog
-	exitCommandArgs, err := generate.CreateExitCommandArgs(storageConfig, runtimeConfig, false, false, true)
+	exitCommandArgs, err := specgenutil.CreateExitCommandArgs(storageConfig, runtimeConfig, logrus.IsLevelEnabled(logrus.DebugLevel), false, true)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error constructing exit command for exec session")
 	}
@@ -919,7 +1017,8 @@ func (ic *ContainerEngine) ContainerRun(ctx context.Context, opts entities.Conta
 	for _, w := range warn {
 		fmt.Fprintf(os.Stderr, "%s\n", w)
 	}
-	rtSpec, spec, optsN, err := generate.MakeContainer(ctx, ic.Libpod, opts.Spec)
+
+	rtSpec, spec, optsN, err := generate.MakeContainer(ctx, ic.Libpod, opts.Spec, false, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -937,7 +1036,7 @@ func (ic *ContainerEngine) ContainerRun(ctx context.Context, opts entities.Conta
 	report := entities.ContainerRunReport{Id: ctr.ID()}
 
 	if logrus.GetLevel() == logrus.DebugLevel {
-		cgroupPath, err := ctr.CGroupPath()
+		cgroupPath, err := ctr.CgroupPath()
 		if err == nil {
 			logrus.Debugf("container %q has CgroupParent %q", ctr.ID(), cgroupPath)
 		}
@@ -1034,6 +1133,7 @@ func (ic *ContainerEngine) ContainerLogs(ctx context.Context, containers []strin
 		Until:      options.Until,
 		Tail:       options.Tail,
 		Timestamps: options.Timestamps,
+		Colors:     options.Colors,
 		UseName:    options.Names,
 		WaitGroup:  &wg,
 	}
@@ -1377,12 +1477,7 @@ func (ic *ContainerEngine) ContainerStats(ctx context.Context, namesOrIds []stri
 
 			reportStats := []define.ContainerStats{}
 			for _, ctr := range containers {
-				prev, ok := containerStats[ctr.ID()]
-				if !ok {
-					prev = &define.ContainerStats{}
-				}
-
-				stats, err := ctr.GetContainerStats(prev)
+				stats, err := ctr.GetContainerStats(containerStats[ctr.ID()])
 				if err != nil {
 					cause := errors.Cause(err)
 					if queryAll && (cause == define.ErrCtrRemoved || cause == define.ErrNoSuchCtr || cause == define.ErrCtrStateInvalid) {
@@ -1437,4 +1532,119 @@ func (ic *ContainerEngine) ContainerRename(ctx context.Context, nameOrID string,
 	}
 
 	return nil
+}
+
+func (ic *ContainerEngine) ContainerClone(ctx context.Context, ctrCloneOpts entities.ContainerCloneOptions) (*entities.ContainerCreateReport, error) {
+	spec := specgen.NewSpecGenerator(ctrCloneOpts.Image, ctrCloneOpts.CreateOpts.RootFS)
+	var c *libpod.Container
+	c, _, err := generate.ConfigToSpec(ic.Libpod, spec, ctrCloneOpts.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	if ctrCloneOpts.CreateOpts.Pod != "" {
+		pod, err := ic.Libpod.LookupPod(ctrCloneOpts.CreateOpts.Pod)
+		if err != nil {
+			return nil, err
+		}
+
+		allNamespaces := []struct {
+			isShared bool
+			value    *specgen.Namespace
+		}{
+			{pod.SharesPID(), &spec.PidNS},
+			{pod.SharesNet(), &spec.NetNS},
+			{pod.SharesCgroup(), &spec.CgroupNS},
+			{pod.SharesIPC(), &spec.IpcNS},
+			{pod.SharesUTS(), &spec.UtsNS},
+		}
+
+		printWarning := false
+		for _, n := range allNamespaces {
+			if n.isShared && !n.value.IsDefault() {
+				*n.value = specgen.Namespace{NSMode: specgen.Default}
+				printWarning = true
+			}
+		}
+		if printWarning {
+			logrus.Warning("At least one namespace was reset to the default configuration")
+		}
+	}
+
+	err = specgenutil.FillOutSpecGen(spec, &ctrCloneOpts.CreateOpts, []string{})
+	if err != nil {
+		return nil, err
+	}
+	out, err := generate.CompleteSpec(ctx, ic.Libpod, spec)
+	if err != nil {
+		return nil, err
+	}
+
+	// Print warnings
+	if len(out) > 0 {
+		for _, w := range out {
+			fmt.Println("Could not properly complete the spec as expected:")
+			fmt.Fprintf(os.Stderr, "%s\n", w)
+		}
+	}
+
+	if len(ctrCloneOpts.CreateOpts.Name) > 0 {
+		spec.Name = ctrCloneOpts.CreateOpts.Name
+	} else {
+		n := c.Name()
+		_, err := ic.Libpod.LookupContainer(c.Name() + "-clone")
+		if err == nil {
+			n += "-clone"
+		}
+		switch {
+		case strings.Contains(n, "-clone"):
+			ind := strings.Index(n, "-clone") + 6
+			num, _ := strconv.Atoi(n[ind:])
+			if num == 0 { // clone1 is hard to get with this logic, just check for it here.
+				_, err = ic.Libpod.LookupContainer(n + "1")
+				if err != nil {
+					spec.Name = n + "1"
+					break
+				}
+			} else {
+				n = n[0:ind]
+			}
+			err = nil
+			count := num
+			for err == nil {
+				count++
+				tempN := n + strconv.Itoa(count)
+				_, err = ic.Libpod.LookupContainer(tempN)
+			}
+			n += strconv.Itoa(count)
+			spec.Name = n
+		default:
+			spec.Name = c.Name() + "-clone"
+		}
+	}
+
+	rtSpec, spec, opts, err := generate.MakeContainer(context.Background(), ic.Libpod, spec, true, c)
+	if err != nil {
+		return nil, err
+	}
+	ctr, err := generate.ExecuteCreate(ctx, ic.Libpod, rtSpec, spec, false, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	if ctrCloneOpts.Destroy {
+		var time *uint
+		err = ic.Libpod.RemoveContainer(context.Background(), c, ctrCloneOpts.Force, false, time)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if ctrCloneOpts.Run {
+		if err := ctr.Start(ctx, true); err != nil {
+			return nil, err
+		}
+	}
+
+	return &entities.ContainerCreateReport{Id: ctr.ID()}, nil
 }

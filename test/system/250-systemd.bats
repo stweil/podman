@@ -9,6 +9,7 @@ load helpers.systemd
 SERVICE_NAME="podman_test_$(random_string)"
 
 UNIT_FILE="$UNIT_DIR/$SERVICE_NAME.service"
+TEMPLATE_FILE_PREFIX="$UNIT_DIR/$SERVICE_NAME"
 
 function setup() {
     skip_if_remote "systemd tests are meaningless over remote"
@@ -17,9 +18,15 @@ function setup() {
 }
 
 function teardown() {
-    run '?' systemctl stop "$SERVICE_NAME"
-    rm -f "$UNIT_FILE"
-    systemctl daemon-reload
+    if [[ -e "$UNIT_FILE" ]]; then
+        run systemctl stop "$SERVICE_NAME"
+        if [ $status -ne 0 ]; then
+            echo "# WARNING: systemctl stop failed in teardown: $output" >&3
+        fi
+
+        rm -f "$UNIT_FILE"
+        systemctl daemon-reload
+    fi
     run_podman rmi -a
 
     basic_teardown
@@ -33,32 +40,25 @@ function service_setup() {
 
     systemctl daemon-reload
 
+    # Also test enabling services (see #12438).
+    run systemctl enable "$SERVICE_NAME"
+    assert $status -eq 0 "Error enabling systemd unit $SERVICE_NAME: $output"
+
     run systemctl start "$SERVICE_NAME"
-    if [ $status -ne 0 ]; then
-        die "Error starting systemd unit $SERVICE_NAME, output: $output"
-    fi
+    assert $status -eq 0 "Error starting systemd unit $SERVICE_NAME: $output"
 
     run systemctl status "$SERVICE_NAME"
-    if [ $status -ne 0 ]; then
-        die "Non-zero status of systemd unit $SERVICE_NAME, output: $output"
-    fi
+    assert $status -eq 0 "systemctl status $SERVICE_NAME: $output"
 }
 
 # Helper to stop a systemd service running a container
 function service_cleanup() {
     local status=$1
     run systemctl stop "$SERVICE_NAME"
-    if [ $status -ne 0 ]; then
-        die "Error stopping systemd unit $SERVICE_NAME, output: $output"
-    fi
+    assert $status -eq 0 "Error stopping systemd unit $SERVICE_NAME: $output"
 
-    if [[ -z "$status" ]]; then
-        run systemctl is-active "$SERVICE_NAME"
-        if [ $status -ne 0 ]; then
-            die "Error checking stauts of systemd unit $SERVICE_NAME, output: $output"
-        fi
-        is "$output" "$status" "$SERVICE_NAME not in expected state"
-    fi
+    run systemctl disable "$SERVICE_NAME"
+    assert $status -eq 0 "Error disabling systemd unit $SERVICE_NAME: $output"
 
     rm -f "$UNIT_FILE"
     systemctl daemon-reload
@@ -92,8 +92,9 @@ function service_cleanup() {
 }
 
 @test "podman autoupdate local" {
+    # Note that the entrypoint may be a JSON string which requires preserving the quotes (see #12477)
     cname=$(random_string)
-    run_podman create --name $cname --label "io.containers.autoupdate=local" $IMAGE top
+    run_podman create --name $cname --label "io.containers.autoupdate=local" --entrypoint '["top"]' $IMAGE
 
     # Start systemd service to run this container
     service_setup
@@ -137,7 +138,7 @@ function service_cleanup() {
 }
 
 # Regression test for #11438
-@test "podman generate systemd - restart policy" {
+@test "podman generate systemd - restart policy & timeouts" {
     cname=$(random_string)
     run_podman create --restart=always --name $cname $IMAGE
     run_podman generate systemd --new $cname
@@ -173,10 +174,14 @@ function check_listen_env() {
     if is_remote; then
 	is "$output" "$stdenv" "LISTEN Environment did not pass: $context"
     else
-	is "$output" "$stdenv
+	out=$(for o in $output; do echo $o; done| sort)
+	std=$(echo "$stdenv
 LISTEN_PID=1
 LISTEN_FDS=1
-LISTEN_FDNAMES=listen_fdnames" "LISTEN Environment passed: $context"
+LISTEN_FDNAMES=listen_fdnames" | sort)
+       echo "<$out>"
+       echo "<$std>"
+       is "$out" "$std" "LISTEN Environment passed: $context"
     fi
 }
 
@@ -199,6 +204,92 @@ LISTEN_FDNAMES=listen_fdnames" "LISTEN Environment passed: $context"
     run_podman start --attach $cid
     unset_listen_env
     check_listen_env "$stdenv" "podman start"
+}
+
+@test "podman generate - systemd template" {
+    cname=$(random_string)
+    run_podman create --name $cname $IMAGE top
+
+    run_podman generate systemd --template -n $cname
+    echo "$output" > "$TEMPLATE_FILE_PREFIX@.service"
+    run_podman rm -f $cname
+
+    systemctl daemon-reload
+
+    INSTANCE="$SERVICE_NAME@1.service"
+    run systemctl start "$INSTANCE"
+    assert $status -eq 0 "Error starting systemd unit $INSTANCE: $output"
+
+    run systemctl status "$INSTANCE"
+    assert $status -eq 0 "systemctl status $INSTANCE: $output"
+
+    run systemctl stop "$INSTANCE"
+    assert $status -eq 0 "Error stopping systemd unit $INSTANCE: $output"
+
+    rm -f "$TEMPLATE_FILE_PREFIX@.service"
+    systemctl daemon-reload
+}
+
+@test "podman generate - systemd template no support for pod" {
+    cname=$(random_string)
+    podname=$(random_string)
+    run_podman pod create --name $podname
+    run_podman run --pod $podname -dt --name $cname $IMAGE top
+
+    run_podman 125 generate systemd --new --template -n $podname
+    is "$output" ".*--template is not supported for pods.*" "Error message contains 'not supported'"
+
+    run_podman rm -f $cname
+    run_podman pod rm -f $podname
+}
+
+@test "podman generate - systemd template only used on --new" {
+    cname=$(random_string)
+    run_podman create --name $cname $IMAGE top
+    run_podman 125 generate systemd --new=false --template -n $cname
+    is "$output" ".*--template cannot be set" "Error message should be '--template requires --new'"
+}
+
+@test "podman --cgroup=cgroupfs doesn't show systemd warning" {
+    DBUS_SESSION_BUS_ADDRESS= run_podman --log-level warning --cgroup-manager=cgroupfs info -f ''
+    is "$output" "" "output should be empty"
+}
+
+@test "podman --systemd sets container_uuid" {
+    run_podman run --systemd=always --name test $IMAGE printenv container_uuid
+    container_uuid=$output
+    run_podman inspect test --format '{{ .ID }}'
+    is "${container_uuid}" "${output:0:32}" "UUID should be first 32 chars of Container id"
+}
+
+# https://github.com/containers/podman/issues/13153
+@test "podman rootless-netns slirp4netns process should be in different cgroup" {
+    is_rootless || skip "only meaningful for rootless"
+
+    cname=$(random_string)
+    local netname=testnet-$(random_string 10)
+
+    # create network and container with network
+    run_podman network create $netname
+    run_podman create --name $cname --network $netname $IMAGE top
+
+    # run container in systemd unit
+    service_setup
+
+    # run second container with network
+    cname2=$(random_string)
+    run_podman run -d --name $cname2 --network $netname $IMAGE top
+
+    # stop systemd container
+    service_cleanup
+
+    # now check that the rootless netns slirp4netns process is still alive and working
+    run_podman unshare --rootless-netns ip addr
+    is "$output" ".*tap0.*" "slirp4netns interface exists in the netns"
+    run_podman exec $cname2 nslookup google.com
+
+    run_podman rm -f -t0 $cname2
+    run_podman network rm -f $netname
 }
 
 # vim: filetype=sh

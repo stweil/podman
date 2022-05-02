@@ -7,11 +7,11 @@ import (
 
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/cmd/podman/validate"
-	"github.com/containers/podman/v3/libpod/events"
-	"github.com/containers/podman/v3/pkg/domain/entities"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/cmd/podman/validate"
+	"github.com/containers/podman/v4/libpod/events"
+	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -51,7 +51,7 @@ func init() {
 
 	formatFlagName := "format"
 	flags.StringVar(&eventFormat, formatFlagName, "", "format the output using a Go template")
-	_ = eventsCommand.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(events.Event{}))
+	_ = eventsCommand.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(&events.Event{}))
 
 	flags.BoolVar(&eventOptions.Stream, "stream", true, "stream new events; for testing only")
 
@@ -77,7 +77,7 @@ func eventsCmd(cmd *cobra.Command, _ []string) error {
 	errChannel := make(chan error)
 
 	var (
-		tmpl   *report.Template
+		rpt    *report.Formatter
 		doJSON bool
 	)
 
@@ -85,7 +85,7 @@ func eventsCmd(cmd *cobra.Command, _ []string) error {
 		doJSON = report.IsJSON(eventFormat)
 		if !doJSON {
 			var err error
-			tmpl, err = report.NewTemplate("events").Parse(eventFormat)
+			rpt, err = report.New(os.Stdout, cmd.Name()).Parse(report.OriginUser, eventFormat)
 			if err != nil {
 				return err
 			}
@@ -108,10 +108,10 @@ func eventsCmd(cmd *cobra.Command, _ []string) error {
 			}
 			fmt.Println(jsonStr)
 		case cmd.Flags().Changed("format"):
-			if err := tmpl.Execute(os.Stdout, event); err != nil {
+			if err := rpt.Execute(event); err != nil {
 				return err
 			}
-			fmt.Println("")
+			os.Stdout.WriteString("\n")
 		default:
 			fmt.Println(event.ToHumanReadable(!noTrunc))
 		}

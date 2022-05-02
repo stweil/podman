@@ -1,11 +1,10 @@
 package integration
 
 import (
-	"os"
 	"syscall"
 	"time"
 
-	. "github.com/containers/podman/v3/test/utils"
+	. "github.com/containers/podman/v4/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
@@ -20,12 +19,9 @@ var _ = Describe("Podman attach", func() {
 
 	BeforeEach(func() {
 		tempdir, err = CreateTempDirInTempDir()
-		if err != nil {
-			os.Exit(1)
-		}
+		Expect(err).To(BeNil())
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.SeedImages()
 	})
 
 	AfterEach(func() {

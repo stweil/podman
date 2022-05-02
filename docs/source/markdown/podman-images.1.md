@@ -25,27 +25,47 @@ Show image digests
 
 #### **--filter**=*filter*, **-f**
 
-Filter output based on conditions provided
+Provide filter values.
 
-  Filters:
+The *filters* argument format is of `key=value` or `key!=value`. If there is more than one *filter*, then pass multiple OPTIONS: **--filter** *foo=bar* **--filter** *bif=baz*.
 
-  **since=IMAGE**
-    Filter on images created after the given IMAGE (name or tag).
+Supported filters:
 
-  **before=IMAGE**
-    Filter on images created before the given IMAGE (name or tag).
+| Filter             | Description                                                                                   |
+| :----------------: | --------------------------------------------------------------------------------------------- |
+| *id*               | Filter by image id.                                                                           |
+| *before*           | Filter by images created before the given IMAGE (name or tag).                                |
+| *containers*       | Filter by images with a running container.                                                    |
+| *dangling*         | Filter by dangling (unused) images.                                                           |
+| *intermediate*     | Filter by images that are dangling and have no children                                       |
+| *label*            | Filter by images with (or without, in the case of label!=[...] is used) the specified labels. |
+| *manifest*         | Filter by images that are manifest lists.                                                     |
+| *readonly*         | Filter by read-only or read/write images.                                                     |
+| *reference*        | Filter by image name.                                                                         |
+| *after*/*since*    | Filter by images created after the given IMAGE (name or tag).                                 |
+| *until*            | Filter by images created until the given duration or time.                                    |
 
-  **dangling
-    Show dangling images. Dangling images are a file system layer that was used in a previous build of an image and is no longer referenced by any image. They are denoted with the `<none>` tag, consume disk space and serve no active purpose.
+The `id` *filter* accepts the image id string.
 
-  **label**
-    Filter by images labels key and/or value.
+The `before` *filter* accepts formats: `<image-name>[:<tag>]`, `<image id>` or `<image@digest>`.
 
-  **readonly
-     Show only read only images or Read/Write images. The default is to show both.  Read/Only images can be configured by modifying the  "additionalimagestores" in the /etc/containers/storage.conf file.
+The `containers` *filter* shows images that have a running container based on that image.
 
-  **reference=**
-     Filter by image name, specified as regular expressions.
+The `dangling` *filter* shows images that are taking up disk space and serve no purpose. Dangling image is a file system layer that was used in a previous build of an image and is no longer referenced by any image. They are denoted with the `<none>` tag, consume disk space and serve no active purpose.
+
+The `intermediate` *filter* shows images that are dangling and have no children.
+
+The `label` *filter* accepts two formats. One is the `label`=*key* or `label`=*key*=*value*, which shows images with the specified labels. The other format is the `label!`=*key* or `label!`=*key*=*value*, which shows images without the specified labels.
+
+The `manifest` *filter* shows images that are manifest lists.
+
+The `readonly` *filter* shows, as a default, both read-only and read/write images. Read-only images can be configured by modifying the  `additionalimagestores` in the `/etc/containers/storage.conf` file.
+
+The `reference` *filter* accepts the pattern of an image reference `<image-name>[:<tag>]`.
+
+The `after` or `since` *filter* accepts formats: `<image-name>[:<tag>]`, `<image id>` or `<image@digest>`.
+
+The `until` *filter* accepts formats: golang duration, RFC3339 time, or a Unix timestamp and shows all images that are created until that time.
 
 #### **--format**=*format*
 
@@ -68,13 +88,13 @@ Valid placeholders for the Go template are listed below:
 
 Display the history of image names.  If an image gets re-tagged or untagged, then the image name history gets prepended (latest image first).  This is especially useful when undoing a tag operation or an image does not contain any name because it has been untagged.
 
-#### **--noheading**, **-n**
-
-Omit the table headings from the listing of images.
-
 #### **--no-trunc**
 
 Do not truncate the output (default *false*).
+
+#### **--noheading**, **-n**
+
+Omit the table headings from the listing of images.
 
 #### **--quiet**, **-q**
 
@@ -188,7 +208,7 @@ docker.io/library/alpine   latest   3fd9065eaf02   5 months ago    4.41 MB
 ```
 
 ## SEE ALSO
-podman(1), containers-storage.conf(5)
+**[podman(1)](podman.1.md)**, **[containers-storage.conf(5)](https://github.com/containers/storage/blob/main/docs/containers-storage.conf.5.md)**
 
 ## HISTORY
 March 2017, Originally compiled by Dan Walsh `<dwalsh@redhat.com>`

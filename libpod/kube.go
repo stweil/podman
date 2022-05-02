@@ -10,22 +10,24 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/libpod/network/types"
-	"github.com/containers/podman/v3/pkg/env"
-	"github.com/containers/podman/v3/pkg/lookup"
-	"github.com/containers/podman/v3/pkg/namespaces"
-	"github.com/containers/podman/v3/pkg/specgen"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/common/libnetwork/types"
+	"github.com/containers/common/pkg/config"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/env"
+	v1 "github.com/containers/podman/v4/pkg/k8s.io/api/core/v1"
+	"github.com/containers/podman/v4/pkg/k8s.io/apimachinery/pkg/api/resource"
+	v12 "github.com/containers/podman/v4/pkg/k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/containers/podman/v4/pkg/k8s.io/apimachinery/pkg/util/intstr"
+	"github.com/containers/podman/v4/pkg/lookup"
+	"github.com/containers/podman/v4/pkg/namespaces"
+	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v4/pkg/util"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	v12 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // GenerateForKube takes a slice of libpod containers and generates
@@ -74,11 +76,15 @@ func (p *Pod) GenerateForKube(ctx context.Context) (*v1.Pod, []v1.ServicePort, e
 				Hostnames: []string{hostSli[0]},
 			})
 		}
-		ports, err = ocicniPortMappingToContainerPort(infraContainer.config.PortMappings)
+		ports, err = portMappingToContainerPort(infraContainer.config.PortMappings)
 		if err != nil {
 			return nil, servicePorts, err
 		}
-		servicePorts = containerPortsToServicePorts(ports)
+		spState := newServicePortState()
+		servicePorts, err = spState.containerPortsToServicePorts(ports)
+		if err != nil {
+			return nil, servicePorts, err
+		}
 		hostNetwork = infraContainer.NetworkMode() == string(namespaces.NetworkMode(specgen.Host))
 	}
 	pod, err := p.podWithContainers(ctx, allContainers, ports, hostNetwork)
@@ -166,14 +172,92 @@ func (v *Volume) GenerateForKube() *v1.PersistentVolumeClaim {
 	}
 }
 
+// YAMLPodSpec represents the same k8s API core PodSpec struct with a small
+// change and that is having Containers as a pointer to YAMLContainer.
+// Because Go doesn't omit empty struct and we want to omit Status in YAML
+// if it's empty. Fixes: GH-11998
+type YAMLPodSpec struct {
+	v1.PodSpec
+	Containers []*YAMLContainer `json:"containers"`
+}
+
+// YAMLPod represents the same k8s API core Pod struct with a small
+// change and that is having Spec as a pointer to YAMLPodSpec and
+// Status as a pointer to k8s API core PodStatus.
+// Because Go doesn't omit empty struct and we want to omit Status in YAML
+// if it's empty. Fixes: GH-11998
+type YAMLPod struct {
+	v1.Pod
+	Spec   *YAMLPodSpec  `json:"spec,omitempty"`
+	Status *v1.PodStatus `json:"status,omitempty"`
+}
+
+// YAMLService represents the same k8s API core Service struct with a small
+// change and that is having Status as a pointer to k8s API core ServiceStatus.
+// Because Go doesn't omit empty struct and we want to omit Status in YAML
+// if it's empty. Fixes: GH-11998
+type YAMLService struct {
+	v1.Service
+	Status *v1.ServiceStatus `json:"status,omitempty"`
+}
+
+// YAMLContainer represents the same k8s API core Container struct with a small
+// change and that is having Resources as a pointer to k8s API core ResourceRequirements.
+// Because Go doesn't omit empty struct and we want to omit Status in YAML
+// if it's empty. Fixes: GH-11998
+type YAMLContainer struct {
+	v1.Container
+	Resources *v1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// ConvertV1PodToYAMLPod takes k8s API core Pod and returns a pointer to YAMLPod
+func ConvertV1PodToYAMLPod(pod *v1.Pod) *YAMLPod {
+	cs := []*YAMLContainer{}
+	for _, cc := range pod.Spec.Containers {
+		var res *v1.ResourceRequirements
+		if len(cc.Resources.Limits) > 0 || len(cc.Resources.Requests) > 0 {
+			res = &cc.Resources
+		}
+		cs = append(cs, &YAMLContainer{Container: cc, Resources: res})
+	}
+	mpo := &YAMLPod{Pod: *pod}
+	mpo.Spec = &YAMLPodSpec{PodSpec: pod.Spec, Containers: cs}
+	for _, ctr := range pod.Spec.Containers {
+		if ctr.SecurityContext == nil || ctr.SecurityContext.SELinuxOptions == nil {
+			continue
+		}
+		selinuxOpts := ctr.SecurityContext.SELinuxOptions
+		if selinuxOpts.User == "" && selinuxOpts.Role == "" && selinuxOpts.Type == "" && selinuxOpts.Level == "" {
+			ctr.SecurityContext.SELinuxOptions = nil
+		}
+	}
+	dnsCfg := pod.Spec.DNSConfig
+	if dnsCfg != nil && (len(dnsCfg.Nameservers)+len(dnsCfg.Searches)+len(dnsCfg.Options) > 0) {
+		mpo.Spec.DNSConfig = dnsCfg
+	}
+	status := pod.Status
+	if status.Phase != "" || len(status.Conditions) > 0 ||
+		status.Message != "" || status.Reason != "" ||
+		status.NominatedNodeName != "" || status.HostIP != "" ||
+		status.PodIP != "" || status.StartTime != nil ||
+		len(status.InitContainerStatuses) > 0 || len(status.ContainerStatuses) > 0 || status.QOSClass != "" || len(status.EphemeralContainerStatuses) > 0 {
+		mpo.Status = &status
+	}
+	return mpo
+}
+
 // GenerateKubeServiceFromV1Pod creates a v1 service object from a v1 pod object
-func GenerateKubeServiceFromV1Pod(pod *v1.Pod, servicePorts []v1.ServicePort) v1.Service {
-	service := v1.Service{}
+func GenerateKubeServiceFromV1Pod(pod *v1.Pod, servicePorts []v1.ServicePort) (YAMLService, error) {
+	service := YAMLService{}
 	selector := make(map[string]string)
 	selector["app"] = pod.Labels["app"]
 	ports := servicePorts
 	if len(ports) == 0 {
-		ports = containersToServicePorts(pod.Spec.Containers)
+		p, err := containersToServicePorts(pod.Spec.Containers)
+		if err != nil {
+			return service, err
+		}
+		ports = p
 	}
 	serviceSpec := v1.ServiceSpec{
 		Ports:    ports,
@@ -187,15 +271,53 @@ func GenerateKubeServiceFromV1Pod(pod *v1.Pod, servicePorts []v1.ServicePort) v1
 		APIVersion: pod.TypeMeta.APIVersion,
 	}
 	service.TypeMeta = tm
-	return service
+	return service, nil
+}
+
+// servicePortState allows calling containerPortsToServicePorts for a single service
+type servicePortState struct {
+	// A program using the shared math/rand state with the default seed will produce the same sequence of pseudo-random numbers
+	// for each execution. Use a private RNG state not to interfere with other users.
+	rng       *rand.Rand
+	usedPorts map[int]struct{}
+}
+
+func newServicePortState() servicePortState {
+	return servicePortState{
+		rng:       rand.New(rand.NewSource(time.Now().UnixNano())),
+		usedPorts: map[int]struct{}{},
+	}
+}
+
+func TruncateKubeAnnotation(str string) string {
+	str = strings.TrimSpace(str)
+	if utf8.RuneCountInString(str) < define.MaxKubeAnnotation {
+		return str
+	}
+	trunc := string([]rune(str)[:define.MaxKubeAnnotation])
+	logrus.Warnf("Truncation Annotation: %q to %q: Kubernetes only allows %d characters", str, trunc, define.MaxKubeAnnotation)
+	return trunc
 }
 
 // containerPortsToServicePorts takes a slice of containerports and generates a
 // slice of service ports
-func containerPortsToServicePorts(containerPorts []v1.ContainerPort) []v1.ServicePort {
+func (state *servicePortState) containerPortsToServicePorts(containerPorts []v1.ContainerPort) ([]v1.ServicePort, error) {
 	sps := make([]v1.ServicePort, 0, len(containerPorts))
 	for _, cp := range containerPorts {
-		nodePort := 30000 + rand.Intn(32767-30000+1)
+		var nodePort int
+		attempt := 0
+		for {
+			// Legal nodeport range is 30000-32767
+			nodePort = 30000 + state.rng.Intn(32767-30000+1)
+			if _, found := state.usedPorts[nodePort]; !found {
+				state.usedPorts[nodePort] = struct{}{}
+				break
+			}
+			attempt++
+			if attempt >= 100 {
+				return nil, fmt.Errorf("too many attempts trying to generate a unique NodePort number")
+			}
+		}
 		servicePort := v1.ServicePort{
 			Protocol:   cp.Protocol,
 			Port:       cp.ContainerPort,
@@ -205,21 +327,22 @@ func containerPortsToServicePorts(containerPorts []v1.ContainerPort) []v1.Servic
 		}
 		sps = append(sps, servicePort)
 	}
-	return sps
+	return sps, nil
 }
 
 // containersToServicePorts takes a slice of v1.Containers and generates an
 // inclusive list of serviceports to expose
-func containersToServicePorts(containers []v1.Container) []v1.ServicePort {
-	// Without the call to rand.Seed, a program will produce the same sequence of pseudo-random numbers
-	// for each execution. Legal nodeport range is 30000-32767
-	rand.Seed(time.Now().UnixNano())
-
+func containersToServicePorts(containers []v1.Container) ([]v1.ServicePort, error) {
+	state := newServicePortState()
 	sps := make([]v1.ServicePort, 0, len(containers))
 	for _, ctr := range containers {
-		sps = append(sps, containerPortsToServicePorts(ctr.Ports)...)
+		ports, err := state.containerPortsToServicePorts(ctr.Ports)
+		if err != nil {
+			return nil, err
+		}
+		sps = append(sps, ports...)
 	}
-	return sps
+	return sps, nil
 }
 
 func (p *Pod) podWithContainers(ctx context.Context, containers []*Container, ports []v1.ContainerPort, hostNetwork bool) (*v1.Pod, error) {
@@ -236,11 +359,13 @@ func (p *Pod) podWithContainers(ctx context.Context, containers []*Container, po
 
 	for _, ctr := range containers {
 		if !ctr.IsInfra() {
-			// Convert auto-update labels into kube annotations
-			for k, v := range getAutoUpdateAnnotations(removeUnderscores(ctr.Name()), ctr.Labels()) {
-				podAnnotations[k] = v
+			for k, v := range ctr.config.Spec.Annotations {
+				podAnnotations[fmt.Sprintf("%s/%s", k, removeUnderscores(ctr.Name()))] = TruncateKubeAnnotation(v)
 			}
-
+			// Convert auto-update labels into kube annotations
+			for k, v := range getAutoUpdateAnnotations(ctr.Name(), ctr.Labels()) {
+				podAnnotations[k] = TruncateKubeAnnotation(v)
+			}
 			isInit := ctr.IsInitCtr()
 
 			ctr, volumes, _, annotations, err := containerToV1Container(ctx, ctr)
@@ -248,7 +373,7 @@ func (p *Pod) podWithContainers(ctx context.Context, containers []*Container, po
 				return nil, err
 			}
 			for k, v := range annotations {
-				podAnnotations[define.BindMountPrefix+k] = strings.TrimSpace(v)
+				podAnnotations[define.BindMountPrefix+k] = TruncateKubeAnnotation(v)
 			}
 			// Since port bindings for the pod are handled by the
 			// infra container, wipe them here.
@@ -352,10 +477,16 @@ func simplePodWithV1Containers(ctx context.Context, ctrs []*Container) (*v1.Pod,
 	hostNetwork := true
 	podDNS := v1.PodDNSConfig{}
 	kubeAnnotations := make(map[string]string)
+	ctrNames := make([]string, 0, len(ctrs))
 	for _, ctr := range ctrs {
+		ctrNames = append(ctrNames, removeUnderscores(ctr.Name()))
+		for k, v := range ctr.config.Spec.Annotations {
+			kubeAnnotations[fmt.Sprintf("%s/%s", k, removeUnderscores(ctr.Name()))] = TruncateKubeAnnotation(v)
+		}
+
 		// Convert auto-update labels into kube annotations
-		for k, v := range getAutoUpdateAnnotations(removeUnderscores(ctr.Name()), ctr.Labels()) {
-			kubeAnnotations[k] = v
+		for k, v := range getAutoUpdateAnnotations(ctr.Name(), ctr.Labels()) {
+			kubeAnnotations[k] = TruncateKubeAnnotation(v)
 		}
 
 		isInit := ctr.IsInitCtr()
@@ -368,7 +499,7 @@ func simplePodWithV1Containers(ctx context.Context, ctrs []*Container) (*v1.Pod,
 			return nil, err
 		}
 		for k, v := range annotations {
-			kubeAnnotations[define.BindMountPrefix+k] = strings.TrimSpace(v)
+			kubeAnnotations[define.BindMountPrefix+k] = TruncateKubeAnnotation(v)
 		}
 		if isInit {
 			kubeInitCtrs = append(kubeInitCtrs, kubeCtr)
@@ -409,8 +540,15 @@ func simplePodWithV1Containers(ctx context.Context, ctrs []*Container) (*v1.Pod,
 			}
 		} // end if ctrDNS
 	}
+	podName := removeUnderscores(ctrs[0].Name())
+	// Check if the pod name and container name will end up conflicting
+	// Append -pod if so
+	if util.StringInSlice(podName, ctrNames) {
+		podName += "-pod"
+	}
+
 	return newPodObject(
-		strings.ReplaceAll(ctrs[0].Name(), "_", ""),
+		podName,
 		kubeAnnotations,
 		kubeInitCtrs,
 		kubeCtrs,
@@ -451,7 +589,7 @@ func containerToV1Container(ctx context.Context, c *Container) (v1.Container, []
 	if err != nil {
 		return kubeContainer, kubeVolumes, nil, annotations, err
 	}
-	ports, err := ocicniPortMappingToContainerPort(portmappings)
+	ports, err := portMappingToContainerPort(portmappings)
 	if err != nil {
 		return kubeContainer, kubeVolumes, nil, annotations, err
 	}
@@ -468,11 +606,23 @@ func containerToV1Container(ctx context.Context, c *Container) (v1.Container, []
 
 	kubeContainer.Name = removeUnderscores(c.Name())
 	_, image := c.Image()
+
+	// The infra container may have been created with an overlay root FS
+	// instead of an infra image.  If so, set the imageto the default K8s
+	// pause one and make sure it's in the storage by pulling it down if
+	// missing.
+	if image == "" && c.IsInfra() {
+		image = c.runtime.config.Engine.InfraImage
+		if _, err := c.runtime.libimageRuntime.Pull(ctx, image, config.PullPolicyMissing, nil); err != nil {
+			return kubeContainer, nil, nil, nil, err
+		}
+	}
+
 	kubeContainer.Image = image
 	kubeContainer.Stdin = c.Stdin()
 	img, _, err := c.runtime.libimageRuntime.LookupImage(image, nil)
 	if err != nil {
-		return kubeContainer, kubeVolumes, nil, annotations, err
+		return kubeContainer, kubeVolumes, nil, annotations, fmt.Errorf("looking up image %q of container %q: %w", image, c.ID(), err)
 	}
 	imgData, err := img.Inspect(ctx, nil)
 	if err != nil {
@@ -500,7 +650,7 @@ func containerToV1Container(ctx context.Context, c *Container) (v1.Container, []
 
 	kubeContainer.Ports = ports
 	// This should not be applicable
-	//container.EnvFromSource =
+	// container.EnvFromSource =
 	kubeContainer.SecurityContext = kubeSec
 	kubeContainer.StdinOnce = false
 	kubeContainer.TTY = c.config.Spec.Process.Terminal
@@ -575,29 +725,36 @@ func containerToV1Container(ctx context.Context, c *Container) (v1.Container, []
 	return kubeContainer, kubeVolumes, &dns, annotations, nil
 }
 
-// ocicniPortMappingToContainerPort takes an ocicni portmapping and converts
+// portMappingToContainerPort takes an portmapping and converts
 // it to a v1.ContainerPort format for kube output
-func ocicniPortMappingToContainerPort(portMappings []types.OCICNIPortMapping) ([]v1.ContainerPort, error) {
+func portMappingToContainerPort(portMappings []types.PortMapping) ([]v1.ContainerPort, error) {
 	containerPorts := make([]v1.ContainerPort, 0, len(portMappings))
 	for _, p := range portMappings {
-		var protocol v1.Protocol
-		switch strings.ToUpper(p.Protocol) {
-		case "TCP":
-			// do nothing as it is the default protocol in k8s, there is no need to explicitly
-			// add it to the generated yaml
-		case "UDP":
-			protocol = v1.ProtocolUDP
-		default:
-			return containerPorts, errors.Errorf("unknown network protocol %s", p.Protocol)
+		protocols := strings.Split(p.Protocol, ",")
+		for _, proto := range protocols {
+			var protocol v1.Protocol
+			switch strings.ToUpper(proto) {
+			case "TCP":
+				// do nothing as it is the default protocol in k8s, there is no need to explicitly
+				// add it to the generated yaml
+			case "UDP":
+				protocol = v1.ProtocolUDP
+			case "SCTP":
+				protocol = v1.ProtocolSCTP
+			default:
+				return containerPorts, errors.Errorf("unknown network protocol %s", p.Protocol)
+			}
+			for i := uint16(0); i < p.Range; i++ {
+				cp := v1.ContainerPort{
+					// Name will not be supported
+					HostPort:      int32(p.HostPort + i),
+					HostIP:        p.HostIP,
+					ContainerPort: int32(p.ContainerPort + i),
+					Protocol:      protocol,
+				}
+				containerPorts = append(containerPorts, cp)
+			}
 		}
-		cp := v1.ContainerPort{
-			// Name will not be supported
-			HostPort:      p.HostPort,
-			HostIP:        p.HostIP,
-			ContainerPort: p.ContainerPort,
-			Protocol:      protocol,
-		}
-		containerPorts = append(containerPorts, cp)
 	}
 	return containerPorts, nil
 }
@@ -607,7 +764,7 @@ func libpodEnvVarsToKubeEnvVars(envs []string, imageEnvs []string) ([]v1.EnvVar,
 	defaultEnv := env.DefaultEnvVariables()
 	envVars := make([]v1.EnvVar, 0, len(envs))
 	imageMap := make(map[string]string, len(imageEnvs))
-	for _, ie := range envs {
+	for _, ie := range imageEnvs {
 		split := strings.SplitN(ie, "=", 2)
 		imageMap[split[0]] = split[1]
 	}
@@ -633,7 +790,7 @@ func libpodEnvVarsToKubeEnvVars(envs []string, imageEnvs []string) ([]v1.EnvVar,
 
 // libpodMountsToKubeVolumeMounts converts the containers mounts to a struct kube understands
 func libpodMountsToKubeVolumeMounts(c *Container) ([]v1.VolumeMount, []v1.Volume, map[string]string, error) {
-	namedVolumes, mounts := c.sortUserVolumes(c.config.Spec)
+	namedVolumes, mounts := c.SortUserVolumes(c.config.Spec)
 	vms := make([]v1.VolumeMount, 0, len(mounts))
 	vos := make([]v1.Volume, 0, len(mounts))
 	annotations := make(map[string]string)
@@ -745,7 +902,7 @@ func convertVolumePathToName(hostSourcePath string) (string, error) {
 	}
 	// First, trim trailing slashes, then replace slashes with dashes.
 	// Thus, /mnt/data/ will become mnt-data
-	return strings.Replace(strings.Trim(hostSourcePath, "/"), "/", "-", -1), nil
+	return strings.ReplaceAll(strings.Trim(hostSourcePath, "/"), "/", "-"), nil
 }
 
 func determineCapAddDropFromCapabilities(defaultCaps, containerCaps []string) *v1.Capabilities {
@@ -787,14 +944,20 @@ func capAddDrop(caps *specs.LinuxCapabilities) (*v1.Capabilities, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	defCaps := g.Config.Process.Capabilities
 	// Combine all the default capabilities into a slice
-	defaultCaps := append(g.Config.Process.Capabilities.Ambient, g.Config.Process.Capabilities.Bounding...)
-	defaultCaps = append(defaultCaps, g.Config.Process.Capabilities.Effective...)
-	defaultCaps = append(defaultCaps, g.Config.Process.Capabilities.Inheritable...)
-	defaultCaps = append(defaultCaps, g.Config.Process.Capabilities.Permitted...)
+	defaultCaps := make([]string, 0, len(defCaps.Ambient)+len(defCaps.Bounding)+len(defCaps.Effective)+len(defCaps.Inheritable)+len(defCaps.Permitted))
+	defaultCaps = append(defaultCaps, defCaps.Ambient...)
+	defaultCaps = append(defaultCaps, defCaps.Bounding...)
+	defaultCaps = append(defaultCaps, defCaps.Effective...)
+	defaultCaps = append(defaultCaps, defCaps.Inheritable...)
+	defaultCaps = append(defaultCaps, defCaps.Permitted...)
 
 	// Combine all the container's capabilities into a slice
-	containerCaps := append(caps.Ambient, caps.Bounding...)
+	containerCaps := make([]string, 0, len(caps.Ambient)+len(caps.Bounding)+len(caps.Effective)+len(caps.Inheritable)+len(caps.Permitted))
+	containerCaps = append(containerCaps, caps.Ambient...)
+	containerCaps = append(containerCaps, caps.Bounding...)
 	containerCaps = append(containerCaps, caps.Effective...)
 	containerCaps = append(containerCaps, caps.Inheritable...)
 	containerCaps = append(containerCaps, caps.Permitted...)
@@ -871,7 +1034,11 @@ func generateKubeSecurityContext(c *Container) (*v1.SecurityContext, error) {
 			if err != nil {
 				return nil, errors.Wrapf(err, "failed to mount %s mountpoint", c.ID())
 			}
-			defer c.unmount(false)
+			defer func() {
+				if err := c.unmount(false); err != nil {
+					logrus.Errorf("Failed to unmount container: %v", err)
+				}
+			}()
 		}
 		logrus.Debugf("Looking in container for user: %s", c.User())
 
@@ -902,7 +1069,7 @@ func generateKubeVolumeDeviceFromLinuxDevice(devices []specs.LinuxDevice) []v1.V
 }
 
 func removeUnderscores(s string) string {
-	return strings.Replace(s, "_", "", -1)
+	return strings.ReplaceAll(s, "_", "")
 }
 
 // getAutoUpdateAnnotations searches for auto-update container labels
@@ -911,12 +1078,13 @@ func getAutoUpdateAnnotations(ctrName string, ctrLabels map[string]string) map[s
 	autoUpdateLabel := "io.containers.autoupdate"
 	annotations := make(map[string]string)
 
+	ctrName = removeUnderscores(ctrName)
 	for k, v := range ctrLabels {
 		if strings.Contains(k, autoUpdateLabel) {
 			// since labels can variate between containers within a pod, they will be
 			// identified with the container name when converted into kube annotations
 			kc := fmt.Sprintf("%s/%s", k, ctrName)
-			annotations[kc] = v
+			annotations[kc] = TruncateKubeAnnotation(v)
 		}
 	}
 

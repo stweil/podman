@@ -22,6 +22,10 @@ Remove all containers.  Can be used in conjunction with **-f** as well.
 
 Read container ID from the specified file and remove the container.  Can be specified multiple times.
 
+#### **--depend**
+
+Remove selected container and recursively remove all containers that depend on it.
+
 #### **--force**, **-f**
 
 Force the removal of running and paused containers. Forcing a container removal also
@@ -39,7 +43,7 @@ during the ExecStop directive of a systemd service referencing that container.
 #### **--latest**, **-l**
 
 Instead of providing the container name or ID, use the last created container. If you use methods other than Podman
-to run containers such as CRI-O, the last started container could be from either of those methods. (This option is not available with the remote Podman client)
+to run containers such as CRI-O, the last started container could be from either of those methods. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 
 #### **--time**, **-t**=*seconds*
 
@@ -54,6 +58,11 @@ created with **podman volume create**, or the **--volume** option of **podman ru
 Remove a container by its name *mywebserver*
 ```
 $ podman rm mywebserver
+```
+
+Remove a *mywebserver* container and all of the containers that depend on it
+```
+$ podman rm --depend mywebserver
 ```
 
 Remove several containers by name and container id.
@@ -91,7 +100,7 @@ $ podman rm -f --latest
   **125** The command fails for any other reason
 
 ## SEE ALSO
-podman(1), podman-image-rm(1), podman-ps(1), podman-build(1), buildah(1), cri-o(1)
+**[podman(1)](podman.1.md)**, **[crio(8)](https://github.com/cri-o/cri-o/blob/main/docs/crio.8.md)**
 
 ## HISTORY
 August 2017, Originally compiled by Ryan Cole <rycole@redhat.com>

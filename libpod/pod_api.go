@@ -3,11 +3,11 @@ package libpod
 import (
 	"context"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/libpod/events"
-	"github.com/containers/podman/v3/pkg/cgroups"
-	"github.com/containers/podman/v3/pkg/parallel"
-	"github.com/containers/podman/v3/pkg/rootless"
+	"github.com/containers/common/pkg/cgroups"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/libpod/events"
+	"github.com/containers/podman/v4/pkg/parallel"
+	"github.com/containers/podman/v4/pkg/rootless"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -586,13 +586,14 @@ func (p *Pod) Inspect() (*define.InspectPodData, error) {
 	var inspectMounts []define.InspectMount
 	var devices []define.InspectDevice
 	var deviceLimits []define.InspectBlkioThrottleDevice
+	var infraSecurity []string
 	if p.state.InfraContainerID != "" {
 		infra, err := p.runtime.GetContainer(p.state.InfraContainerID)
 		if err != nil {
 			return nil, err
 		}
 		infraConfig = new(define.InspectPodInfraConfig)
-		infraConfig.HostNetwork = !infra.config.ContainerNetworkConfig.UseImageHosts
+		infraConfig.HostNetwork = p.NetworkMode() == "host"
 		infraConfig.StaticIP = infra.config.ContainerNetworkConfig.StaticIP
 		infraConfig.NoManageResolvConf = infra.config.UseImageResolvConf
 		infraConfig.NoManageHosts = infra.config.UseImageHosts
@@ -601,8 +602,9 @@ func (p *Pod) Inspect() (*define.InspectPodData, error) {
 		infraConfig.CPUSetCPUs = p.ResourceLim().CPU.Cpus
 		infraConfig.PidNS = p.PidMode()
 		infraConfig.UserNS = p.UserNSMode()
-		namedVolumes, mounts := infra.sortUserVolumes(infra.config.Spec)
-		inspectMounts, err = infra.GetInspectMounts(namedVolumes, infra.config.ImageVolumes, mounts)
+		namedVolumes, mounts := infra.SortUserVolumes(infra.config.Spec)
+		inspectMounts, err = infra.GetMounts(namedVolumes, infra.config.ImageVolumes, mounts)
+		infraSecurity = infra.GetSecurityOptions()
 		if err != nil {
 			return nil, err
 		}
@@ -637,9 +639,17 @@ func (p *Pod) Inspect() (*define.InspectPodData, error) {
 			infraConfig.HostAdd = make([]string, 0, len(infra.config.HostAdd))
 			infraConfig.HostAdd = append(infraConfig.HostAdd, infra.config.HostAdd...)
 		}
-		if len(infra.config.ContainerNetworkConfig.Networks) > 0 {
-			infraConfig.Networks = make([]string, 0, len(infra.config.ContainerNetworkConfig.Networks))
-			infraConfig.Networks = append(infraConfig.Networks, infra.config.ContainerNetworkConfig.Networks...)
+
+		networks, err := infra.networks()
+		if err != nil {
+			return nil, err
+		}
+		netNames := make([]string, 0, len(networks))
+		for name := range networks {
+			netNames = append(netNames, name)
+		}
+		if len(netNames) > 0 {
+			infraConfig.Networks = netNames
 		}
 		infraConfig.NetworkOptions = infra.config.ContainerNetworkConfig.NetworkOptions
 		infraConfig.PortBindings = makeInspectPortBindings(infra.config.ContainerNetworkConfig.PortMappings, nil)
@@ -670,6 +680,7 @@ func (p *Pod) Inspect() (*define.InspectPodData, error) {
 		Devices:            devices,
 		BlkioDeviceReadBps: deviceLimits,
 		VolumesFrom:        p.VolumesFrom(),
+		SecurityOpts:       infraSecurity,
 	}
 
 	return &inspectData, nil

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/containers/podman/v3/pkg/bindings"
+	"github.com/containers/podman/v4/pkg/bindings"
 	"github.com/pkg/errors"
 )
 
@@ -29,7 +29,7 @@ func Logs(ctx context.Context, nameOrID string, options *LogOptions, stdoutChan,
 	if options.Stdout == nil && options.Stderr == nil {
 		params.Set("stdout", strconv.FormatBool(true))
 	}
-	response, err := conn.DoRequest(nil, http.MethodGet, "/containers/%s/logs", params, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/containers/%s/logs", params, nil, nameOrID)
 	if err != nil {
 		return err
 	}
@@ -39,7 +39,7 @@ func Logs(ctx context.Context, nameOrID string, options *LogOptions, stdoutChan,
 	for {
 		fd, l, err := DemuxHeader(response.Body, buffer)
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return nil
 			}
 			return err
@@ -57,7 +57,7 @@ func Logs(ctx context.Context, nameOrID string, options *LogOptions, stdoutChan,
 		case 2:
 			stderrChan <- string(frame)
 		case 3:
-			return errors.New("error from service in stream: " + string(frame))
+			return errors.New("from service in stream: " + string(frame))
 		default:
 			return fmt.Errorf("unrecognized input header: %d", fd)
 		}

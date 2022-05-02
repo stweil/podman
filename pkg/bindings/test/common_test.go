@@ -1,4 +1,4 @@
-package test_bindings
+package bindings_test
 
 import (
 	"context"
@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v3/libpod/define"
-	. "github.com/containers/podman/v3/pkg/bindings"
-	"github.com/containers/podman/v3/pkg/bindings/containers"
-	"github.com/containers/podman/v3/pkg/specgen"
+	"github.com/containers/podman/v4/libpod/define"
+	. "github.com/containers/podman/v4/pkg/bindings"
+	"github.com/containers/podman/v4/pkg/bindings/containers"
+	"github.com/containers/podman/v4/pkg/specgen"
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega/gexec"
 	"github.com/pkg/errors"
@@ -51,7 +51,7 @@ var (
 		shortName:   "busybox",
 		tarballName: "busybox.tar",
 	}
-	CACHE_IMAGES = []testImage{alpine, busybox}
+	CACHE_IMAGES = []testImage{alpine, busybox} //nolint:revive,stylecheck
 )
 
 type bindingTest struct {
@@ -86,7 +86,7 @@ func (b *bindingTest) runPodman(command []string) *gexec.Session {
 	}
 	val, ok = os.LookupEnv("CNI_CONFIG_DIR")
 	if ok {
-		cmd = append(cmd, "--cni-config-dir", val)
+		cmd = append(cmd, "--network-config-dir", val)
 	}
 	val, ok = os.LookupEnv("CONMON")
 	if ok {
@@ -151,7 +151,7 @@ func createTempDirInTempDir() (string, error) {
 }
 
 func (b *bindingTest) startAPIService() *gexec.Session {
-	cmd := []string{"--log-level=debug", "--events-backend=file", "system", "service", "--timeout=0", b.sock}
+	cmd := []string{"--log-level=debug", "system", "service", "--timeout=0", b.sock}
 	session := b.runPodman(cmd)
 
 	sock := strings.TrimPrefix(b.sock, "unix://")
@@ -211,7 +211,7 @@ func (b *bindingTest) RunTopContainer(containerName *string, podName *string) (s
 	}
 	ctr, err := containers.CreateWithSpec(b.conn, s, nil)
 	if err != nil {
-		return "", nil
+		return "", err
 	}
 	err = containers.Start(b.conn, ctr.ID, nil)
 	if err != nil {
@@ -225,12 +225,23 @@ func (b *bindingTest) RunTopContainer(containerName *string, podName *string) (s
 // This method creates a pod with the given pod name.
 // Podname is an optional parameter
 func (b *bindingTest) Podcreate(name *string) {
+	b.PodcreateAndExpose(name, nil)
+}
+
+// This method creates a pod with the given pod name and publish port.
+// Podname is an optional parameter
+// port is an optional parameter
+func (b *bindingTest) PodcreateAndExpose(name *string, port *string) {
+	command := []string{"pod", "create"}
 	if name != nil {
 		podname := *name
-		b.runPodman([]string{"pod", "create", "--name", podname}).Wait(45)
-	} else {
-		b.runPodman([]string{"pod", "create"}).Wait(45)
+		command = append(command, "--name", podname)
 	}
+	if port != nil {
+		podport := *port
+		command = append(command, "--publish", podport)
+	}
+	b.runPodman(command).Wait(45)
 }
 
 //  StringInSlice returns a boolean based on whether a given

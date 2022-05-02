@@ -4,10 +4,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/sysinfo"
-	"github.com/containers/podman/v3/pkg/cgroups"
-	"github.com/containers/podman/v3/pkg/specgen"
-	"github.com/containers/podman/v3/utils"
+	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v4/utils"
 	"github.com/pkg/errors"
 )
 
@@ -47,10 +47,8 @@ func verifyContainerResourcesCgroupV1(s *specgen.SpecGenerator) ([]string, error
 			if !sysInfo.MemorySwappiness {
 				warnings = append(warnings, "Your kernel does not support memory swappiness capabilities, or the cgroup is not mounted. Memory swappiness discarded.")
 				memory.Swappiness = nil
-			} else {
-				if *memory.Swappiness > 100 {
-					return warnings, errors.Errorf("invalid value: %v, valid memory swappiness range is 0-100", *memory.Swappiness)
-				}
+			} else if *memory.Swappiness > 100 {
+				return warnings, errors.Errorf("invalid value: %v, valid memory swappiness range is 0-100", *memory.Swappiness)
 			}
 		}
 		if memory.Reservation != nil && !sysInfo.MemoryReservation {
@@ -59,10 +57,6 @@ func verifyContainerResourcesCgroupV1(s *specgen.SpecGenerator) ([]string, error
 		}
 		if memory.Limit != nil && memory.Reservation != nil && *memory.Limit < *memory.Reservation {
 			return warnings, errors.New("minimum memory limit cannot be less than memory reservation limit, see usage")
-		}
-		if memory.Kernel != nil && !sysInfo.KernelMemory {
-			warnings = append(warnings, "Your kernel does not support kernel memory limit capabilities or the cgroup is not mounted. Limitation discarded.")
-			memory.Kernel = nil
 		}
 		if memory.DisableOOMKiller != nil && *memory.DisableOOMKiller && !sysInfo.OomKillDisable {
 			warnings = append(warnings, "Your kernel does not support OomKillDisable. OomKillDisable discarded.")

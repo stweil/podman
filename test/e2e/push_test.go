@@ -2,12 +2,14 @@ package integration
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/containers/podman/v3/pkg/rootless"
-	. "github.com/containers/podman/v3/test/utils"
+	"github.com/containers/podman/v4/pkg/rootless"
+	. "github.com/containers/podman/v4/test/utils"
+	"github.com/containers/storage/pkg/archive"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
@@ -63,13 +65,44 @@ var _ = Describe("Podman push", func() {
 		Expect(session).Should(Exit(0))
 	})
 
+	It("podman push to oci with compression-format", func() {
+		SkipIfRemote("Remote push does not support dir transport")
+		bbdir := filepath.Join(podmanTest.TempDir, "busybox-oci")
+		session := podmanTest.Podman([]string{"push", "--compression-format=zstd", "--remove-signatures", ALPINE,
+			fmt.Sprintf("oci:%s", bbdir)})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+
+		foundZstdFile := false
+
+		blobsDir := filepath.Join(bbdir, "blobs/sha256")
+
+		blobs, err := ioutil.ReadDir(blobsDir)
+		Expect(err).To(BeNil())
+
+		for _, f := range blobs {
+			blobPath := filepath.Join(blobsDir, f.Name())
+
+			sourceFile, err := ioutil.ReadFile(blobPath)
+			Expect(err).To(BeNil())
+
+			compressionType := archive.DetectCompression(sourceFile)
+			if compressionType == archive.Zstd {
+				foundZstdFile = true
+				break
+			}
+		}
+		Expect(foundZstdFile).To(BeTrue())
+	})
+
 	It("podman push to local registry", func() {
 		SkipIfRemote("Remote does not support --digestfile or --remove-signatures")
 		if podmanTest.Host.Arch == "ppc64le" {
 			Skip("No registry image for ppc64le")
 		}
 		if rootless.IsRootless() {
-			podmanTest.RestoreArtifact(registry)
+			err := podmanTest.RestoreArtifact(registry)
+			Expect(err).ToNot(HaveOccurred())
 		}
 		lock := GetPortLock("5000")
 		defer lock.Unlock()
@@ -95,13 +128,15 @@ var _ = Describe("Podman push", func() {
 	})
 
 	It("podman push to local registry with authorization", func() {
-		SkipIfRootless("FIXME: Creating content in certs.d we use directories in homedir")
+		SkipIfRootless("volume-mounting a certs.d file N/A over remote")
 		if podmanTest.Host.Arch == "ppc64le" {
 			Skip("No registry image for ppc64le")
 		}
 		authPath := filepath.Join(podmanTest.TempDir, "auth")
-		os.Mkdir(authPath, os.ModePerm)
-		os.MkdirAll("/etc/containers/certs.d/localhost:5000", os.ModePerm)
+		err = os.Mkdir(authPath, os.ModePerm)
+		Expect(err).ToNot(HaveOccurred())
+		err = os.MkdirAll("/etc/containers/certs.d/localhost:5000", os.ModePerm)
+		Expect(err).ToNot(HaveOccurred())
 		defer os.RemoveAll("/etc/containers/certs.d/localhost:5000")
 
 		cwd, _ := os.Getwd()
@@ -125,11 +160,14 @@ var _ = Describe("Podman push", func() {
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
 
-		f, _ := os.Create(filepath.Join(authPath, "htpasswd"))
+		f, err := os.Create(filepath.Join(authPath, "htpasswd"))
+		Expect(err).ToNot(HaveOccurred())
 		defer f.Close()
 
-		f.WriteString(session.OutputToString())
-		f.Sync()
+		_, err = f.WriteString(session.OutputToString())
+		Expect(err).ToNot(HaveOccurred())
+		err = f.Sync()
+		Expect(err).ToNot(HaveOccurred())
 
 		session = podmanTest.Podman([]string{"run", "-d", "-p", "5000:5000", "--name", "registry", "-v",
 			strings.Join([]string{authPath, "/auth"}, ":"), "-e", "REGISTRY_AUTH=htpasswd", "-e",
@@ -146,7 +184,7 @@ var _ = Describe("Podman push", func() {
 		session = podmanTest.Podman([]string{"logs", "registry"})
 		session.WaitWithDefaultTimeout()
 
-		push := podmanTest.Podman([]string{"push", "--format=v2s2", "--creds=podmantest:test", ALPINE, "localhost:5000/tlstest"})
+		push := podmanTest.Podman([]string{"push", "--tls-verify=true", "--format=v2s2", "--creds=podmantest:test", ALPINE, "localhost:5000/tlstest"})
 		push.WaitWithDefaultTimeout()
 		Expect(push).To(ExitWithError())
 
@@ -163,7 +201,7 @@ var _ = Describe("Podman push", func() {
 
 		if !IsRemote() {
 			// remote does not support --cert-dir
-			push = podmanTest.Podman([]string{"push", "--creds=podmantest:test", "--cert-dir=fakedir", ALPINE, "localhost:5000/certdirtest"})
+			push = podmanTest.Podman([]string{"push", "--tls-verify=true", "--creds=podmantest:test", "--cert-dir=fakedir", ALPINE, "localhost:5000/certdirtest"})
 			push.WaitWithDefaultTimeout()
 			Expect(push).To(ExitWithError())
 		}
@@ -188,6 +226,7 @@ var _ = Describe("Podman push", func() {
 
 		if setup.LineInOutputContains("Active: inactive") {
 			setup = SystemExec("systemctl", []string{"start", "docker"})
+			Expect(setup).Should(Exit(0))
 			defer func() {
 				stop := SystemExec("systemctl", []string{"stop", "docker"})
 				Expect(stop).Should(Exit(0))

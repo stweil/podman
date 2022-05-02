@@ -2,16 +2,17 @@ package generate
 
 import (
 	"context"
+	"encoding/json"
 	"path"
 	"strings"
 
 	"github.com/containers/common/libimage"
+	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v3/libpod"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/cgroups"
-	"github.com/containers/podman/v3/pkg/rootless"
-	"github.com/containers/podman/v3/pkg/specgen"
+	"github.com/containers/podman/v4/libpod"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v4/pkg/specgen"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/pkg/errors"
@@ -31,7 +32,7 @@ func setProcOpts(s *specgen.SpecGenerator, g *generate.Generator) {
 	}
 }
 
-func addRlimits(s *specgen.SpecGenerator, g *generate.Generator) error {
+func addRlimits(s *specgen.SpecGenerator, g *generate.Generator) {
 	var (
 		isRootless = rootless.IsRootless()
 		nofileSet  = false
@@ -40,7 +41,7 @@ func addRlimits(s *specgen.SpecGenerator, g *generate.Generator) error {
 
 	if s.Rlimits == nil {
 		g.Config.Process.Rlimits = nil
-		return nil
+		return
 	}
 
 	for _, u := range s.Rlimits {
@@ -90,12 +91,10 @@ func addRlimits(s *specgen.SpecGenerator, g *generate.Generator) error {
 		}
 		g.AddProcessRlimits("RLIMIT_NPROC", max, current)
 	}
-
-	return nil
 }
 
 // Produce the final command for the container.
-func makeCommand(ctx context.Context, s *specgen.SpecGenerator, imageData *libimage.ImageData, rtc *config.Config) ([]string, error) {
+func makeCommand(s *specgen.SpecGenerator, imageData *libimage.ImageData, rtc *config.Config) ([]string, error) {
 	finalCommand := []string{}
 
 	entrypoint := s.Entrypoint
@@ -151,7 +150,7 @@ func canMountSys(isRootless, isNewUserns bool, s *specgen.SpecGenerator) bool {
 	return true
 }
 
-func getCGroupPermissons(unmask []string) string {
+func getCgroupPermissons(unmask []string) string {
 	ro := "ro"
 	rw := "rw"
 	cgroup := "/sys/fs/cgroup"
@@ -174,8 +173,8 @@ func getCGroupPermissons(unmask []string) string {
 }
 
 // SpecGenToOCI returns the base configuration for the container.
-func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runtime, rtc *config.Config, newImage *libimage.Image, mounts []spec.Mount, pod *libpod.Pod, finalCmd []string) (*spec.Spec, error) {
-	cgroupPerm := getCGroupPermissons(s.Unmask)
+func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runtime, rtc *config.Config, newImage *libimage.Image, mounts []spec.Mount, pod *libpod.Pod, finalCmd []string, compatibleOptions *libpod.InfraInherit) (*spec.Spec, error) {
+	cgroupPerm := getCgroupPermissons(s.Unmask)
 
 	g, err := generate.New("linux")
 	if err != nil {
@@ -298,11 +297,46 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 	for key, val := range s.Annotations {
 		g.AddAnnotation(key, val)
 	}
-	g.AddProcessEnv("container", "podman")
 
-	g.Config.Linux.Resources = s.ResourceLimits
+	switch {
+	case compatibleOptions.InfraResources == nil && s.ResourceLimits != nil:
+		out, err := json.Marshal(s.ResourceLimits)
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal(out, g.Config.Linux.Resources)
+		if err != nil {
+			return nil, err
+		}
+	case s.ResourceLimits != nil: // if we have predefined resource limits we need to make sure we keep the infra and container limits
+		originalResources, err := json.Marshal(s.ResourceLimits)
+		if err != nil {
+			return nil, err
+		}
+		infraResources, err := json.Marshal(compatibleOptions.InfraResources)
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal(infraResources, s.ResourceLimits) // put infra's resource limits in the container
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal(originalResources, s.ResourceLimits) // make sure we did not override anything
+		if err != nil {
+			return nil, err
+		}
+		g.Config.Linux.Resources = s.ResourceLimits
+	default:
+		g.Config.Linux.Resources = compatibleOptions.InfraResources
+	}
 	// Devices
 
+	// set the default rule at the beginning of device configuration
+	if !inUserNS && !s.Privileged {
+		g.AddLinuxResourcesDevice(false, "", nil, nil, "rwm")
+	}
+
+	var userDevices []spec.LinuxDevice
 	if s.Privileged {
 		// If privileged, we need to add all the host devices to the
 		// spec.  We do not add the user provided ones because we are
@@ -317,28 +351,43 @@ func SpecGenToOCI(ctx context.Context, s *specgen.SpecGenerator, rt *libpod.Runt
 				return nil, err
 			}
 		}
+		if len(compatibleOptions.HostDeviceList) > 0 && len(s.Devices) == 0 {
+			userDevices = compatibleOptions.HostDeviceList
+		} else {
+			userDevices = s.Devices
+		}
 		// add default devices specified by caller
-		for _, device := range s.Devices {
+		for _, device := range userDevices {
 			if err = DevicesFromPath(&g, device.Path); err != nil {
 				return nil, err
 			}
 		}
 	}
-	s.HostDeviceList = s.Devices
+	s.HostDeviceList = userDevices
 
-	for _, dev := range s.DeviceCGroupRule {
-		g.AddLinuxResourcesDevice(true, dev.Type, dev.Major, dev.Minor, dev.Access)
+	// set the devices cgroup when not running in a user namespace
+	if !inUserNS && !s.Privileged {
+		for _, dev := range s.DeviceCgroupRule {
+			g.AddLinuxResourcesDevice(true, dev.Type, dev.Major, dev.Minor, dev.Access)
+		}
+	}
+
+	for k, v := range s.WeightDevice {
+		statT := unix.Stat_t{}
+		if err := unix.Stat(k, &statT); err != nil {
+			return nil, errors.Wrapf(err, "failed to inspect '%s' in --blkio-weight-device", k)
+		}
+		g.AddLinuxResourcesBlockIOWeightDevice((int64(unix.Major(uint64(statT.Rdev)))), (int64(unix.Minor(uint64(statT.Rdev)))), *v.Weight)
 	}
 
 	BlockAccessToKernelFilesystems(s.Privileged, s.PidNS.IsHost(), s.Mask, s.Unmask, &g)
 
+	g.ClearProcessEnv()
 	for name, val := range s.Env {
 		g.AddProcessEnv(name, val)
 	}
 
-	if err := addRlimits(s, &g); err != nil {
-		return nil, err
-	}
+	addRlimits(s, &g)
 
 	// NAMESPACES
 	if err := specConfigureNamespaces(s, &g, rt, pod); err != nil {

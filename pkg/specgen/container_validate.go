@@ -4,9 +4,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/rootless"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v4/pkg/util"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 )
@@ -29,30 +29,22 @@ func exclusiveOptions(opt1, opt2 string) error {
 // Validate verifies that the given SpecGenerator is valid and satisfies required
 // input for creating a container.
 func (s *SpecGenerator) Validate() error {
-	if rootless.IsRootless() && len(s.CNINetworks) == 0 {
-		if s.StaticIP != nil || s.StaticIPv6 != nil {
-			return ErrNoStaticIPRootless
-		}
-		if s.StaticMAC != nil {
-			return ErrNoStaticMACRootless
-		}
-	}
-
 	// Containers being added to a pod cannot have certain network attributes
 	// associated with them because those should be on the infra container.
 	if len(s.Pod) > 0 && s.NetNS.NSMode == FromPod {
-		if s.StaticIP != nil || s.StaticIPv6 != nil {
-			return errors.Wrap(define.ErrNetworkOnPodContainer, "static ip addresses must be defined when the pod is created")
-		}
-		if s.StaticMAC != nil {
-			return errors.Wrap(define.ErrNetworkOnPodContainer, "MAC addresses must be defined when the pod is created")
-		}
-		if len(s.CNINetworks) > 0 {
+		if len(s.Networks) > 0 {
 			return errors.Wrap(define.ErrNetworkOnPodContainer, "networks must be defined when the pod is created")
 		}
 		if len(s.PortMappings) > 0 || s.PublishExposedPorts {
 			return errors.Wrap(define.ErrNetworkOnPodContainer, "published or exposed ports must be defined when the pod is created")
 		}
+		if len(s.HostAdd) > 0 {
+			return errors.Wrap(define.ErrNetworkOnPodContainer, "extra host entries must be specified on the pod")
+		}
+	}
+
+	if s.NetNS.IsContainer() && len(s.HostAdd) > 0 {
+		return errors.Wrap(ErrInvalidSpecConfig, "cannot set extra host entries when the container is joined to another containers network namespace")
 	}
 
 	//
@@ -91,17 +83,13 @@ func (s *SpecGenerator) Validate() error {
 			s.ContainerStorageConfig.ImageVolumeMode, strings.Join(ImageVolumeModeValues, ","))
 	}
 	// shmsize conflicts with IPC namespace
-	if s.ContainerStorageConfig.ShmSize != nil && !s.ContainerStorageConfig.IpcNS.IsPrivate() {
-		return errors.New("cannot set shmsize when running in the host IPC Namespace")
+	if s.ContainerStorageConfig.ShmSize != nil && (s.ContainerStorageConfig.IpcNS.IsHost() || s.ContainerStorageConfig.IpcNS.IsNone()) {
+		return errors.Errorf("cannot set shmsize when running in the %s IPC Namespace", s.ContainerStorageConfig.IpcNS)
 	}
 
 	//
 	// ContainerSecurityConfig
 	//
-	// capadd and privileged are exclusive
-	if len(s.CapAdd) > 0 && s.Privileged {
-		return exclusiveOptions("CapAdd", "privileged")
-	}
 	// userns and idmappings conflict
 	if s.UserNS.IsPrivate() && s.IDMappings == nil {
 		return errors.Wrap(ErrInvalidSpecConfig, "IDMappings are required when not creating a User namespace")
@@ -134,19 +122,19 @@ func (s *SpecGenerator) Validate() error {
 	}
 
 	// TODO the specgen does not appear to handle this?  Should it
-	//switch config.Cgroup.Cgroups {
-	//case "disabled":
+	// switch config.Cgroup.Cgroups {
+	// case "disabled":
 	//	if addedResources {
 	//		return errors.New("cannot specify resource limits when cgroups are disabled is specified")
 	//	}
 	//	configSpec.Linux.Resources = &spec.LinuxResources{}
-	//case "enabled", "no-conmon", "":
+	// case "enabled", "no-conmon", "":
 	//	// Do nothing
-	//default:
+	// default:
 	//	return errors.New("unrecognized option for cgroups; supported are 'default', 'disabled', 'no-conmon'")
-	//}
+	// }
 	invalidUlimitFormatError := errors.New("invalid default ulimit definition must be form of type=soft:hard")
-	//set ulimits if not rootless
+	// set ulimits if not rootless
 	if len(s.ContainerResourceConfig.Rlimits) < 1 && !rootless.IsRootless() {
 		// Containers common defines this as something like nproc=4194304:4194304
 		tmpnproc := containerConfig.Ulimits()
@@ -181,7 +169,7 @@ func (s *SpecGenerator) Validate() error {
 	if err := s.UtsNS.validate(); err != nil {
 		return err
 	}
-	if err := s.IpcNS.validate(); err != nil {
+	if err := validateIPCNS(&s.IpcNS); err != nil {
 		return err
 	}
 	if err := s.PidNS.validate(); err != nil {
@@ -204,5 +192,10 @@ func (s *SpecGenerator) Validate() error {
 	if err := validateNetNS(&s.NetNS); err != nil {
 		return err
 	}
+	if s.NetNS.NSMode != Bridge && len(s.Networks) > 0 {
+		// Note that we also get the ip and mac in the networks map
+		return errors.New("Networks and static ip/mac address can only be used with Bridge mode networking")
+	}
+
 	return nil
 }

@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	. "github.com/containers/podman/v3/test/utils"
+	. "github.com/containers/podman/v4/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
@@ -25,11 +25,11 @@ var _ = Describe("Podman volume plugins", func() {
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.SeedImages()
 		os.Setenv("CONTAINERS_CONF", "config/containers.conf")
 		SkipIfRemote("Volume plugins only supported as local")
 		SkipIfRootless("Root is required for volume plugin testing")
-		os.MkdirAll("/run/docker/plugins", 0755)
+		err = os.MkdirAll("/run/docker/plugins", 0755)
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -55,7 +55,8 @@ var _ = Describe("Podman volume plugins", func() {
 		podmanTest.AddImageToRWStore(volumeTest)
 
 		pluginStatePath := filepath.Join(podmanTest.TempDir, "volumes")
-		os.Mkdir(pluginStatePath, 0755)
+		err := os.Mkdir(pluginStatePath, 0755)
+		Expect(err).ToNot(HaveOccurred())
 
 		// Keep this distinct within tests to avoid multiple tests using the same plugin.
 		pluginName := "testvol1"
@@ -72,7 +73,7 @@ var _ = Describe("Podman volume plugins", func() {
 		ls1.WaitWithDefaultTimeout()
 		Expect(ls1).Should(Exit(0))
 		arrOutput := ls1.OutputToStringArray()
-		Expect(len(arrOutput)).To(Equal(1))
+		Expect(arrOutput).To(HaveLen(1))
 		Expect(arrOutput[0]).To(ContainSubstring(volName))
 
 		remove := podmanTest.Podman([]string{"volume", "rm", volName})
@@ -82,14 +83,15 @@ var _ = Describe("Podman volume plugins", func() {
 		ls2 := podmanTest.Podman([]string{"volume", "ls", "-q"})
 		ls2.WaitWithDefaultTimeout()
 		Expect(ls2).Should(Exit(0))
-		Expect(len(ls2.OutputToStringArray())).To(Equal(0))
+		Expect(ls2.OutputToStringArray()).To(BeEmpty())
 	})
 
 	It("volume inspect with running plugin succeeds", func() {
 		podmanTest.AddImageToRWStore(volumeTest)
 
 		pluginStatePath := filepath.Join(podmanTest.TempDir, "volumes")
-		os.Mkdir(pluginStatePath, 0755)
+		err := os.Mkdir(pluginStatePath, 0755)
+		Expect(err).ToNot(HaveOccurred())
 
 		// Keep this distinct within tests to avoid multiple tests using the same plugin.
 		pluginName := "testvol2"
@@ -112,7 +114,8 @@ var _ = Describe("Podman volume plugins", func() {
 		podmanTest.AddImageToRWStore(volumeTest)
 
 		pluginStatePath := filepath.Join(podmanTest.TempDir, "volumes")
-		os.Mkdir(pluginStatePath, 0755)
+		err := os.Mkdir(pluginStatePath, 0755)
+		Expect(err).ToNot(HaveOccurred())
 
 		// Keep this distinct within tests to avoid multiple tests using the same plugin.
 		pluginName := "testvol3"
@@ -130,7 +133,7 @@ var _ = Describe("Podman volume plugins", func() {
 		ls1.WaitWithDefaultTimeout()
 		Expect(ls1).Should(Exit(0))
 		arrOutput := ls1.OutputToStringArray()
-		Expect(len(arrOutput)).To(Equal(1))
+		Expect(arrOutput).To(HaveLen(1))
 		Expect(arrOutput[0]).To(ContainSubstring(volName))
 
 		stop := podmanTest.Podman([]string{"stop", "--timeout", "0", ctrName})
@@ -146,14 +149,15 @@ var _ = Describe("Podman volume plugins", func() {
 		ls2 := podmanTest.Podman([]string{"volume", "ls", "-q"})
 		ls2.WaitWithDefaultTimeout()
 		Expect(ls2).Should(Exit(0))
-		Expect(len(ls2.OutputToStringArray())).To(Equal(0))
+		Expect(ls2.OutputToStringArray()).To(BeEmpty())
 	})
 
 	It("use plugin in containers", func() {
 		podmanTest.AddImageToRWStore(volumeTest)
 
 		pluginStatePath := filepath.Join(podmanTest.TempDir, "volumes")
-		os.Mkdir(pluginStatePath, 0755)
+		err := os.Mkdir(pluginStatePath, 0755)
+		Expect(err).ToNot(HaveOccurred())
 
 		// Keep this distinct within tests to avoid multiple tests using the same plugin.
 		pluginName := "testvol4"
@@ -166,11 +170,13 @@ var _ = Describe("Podman volume plugins", func() {
 		create.WaitWithDefaultTimeout()
 		Expect(create).Should(Exit(0))
 
-		ctr1 := podmanTest.Podman([]string{"run", "--security-opt", "label=disable", "-v", fmt.Sprintf("%v:/test", volName), ALPINE, "sh", "-c", "touch /test/testfile && echo helloworld > /test/testfile"})
+		ctr1Name := "ctr1"
+		ctr1 := podmanTest.Podman([]string{"run", "--security-opt", "label=disable", "--name", ctr1Name, "-v", fmt.Sprintf("%v:/test", volName), ALPINE, "sh", "-c", "touch /test/testfile && echo helloworld > /test/testfile"})
 		ctr1.WaitWithDefaultTimeout()
 		Expect(ctr1).Should(Exit(0))
 
-		ctr2 := podmanTest.Podman([]string{"run", "--security-opt", "label=disable", "-v", fmt.Sprintf("%v:/test", volName), ALPINE, "cat", "/test/testfile"})
+		ctr2Name := "ctr2"
+		ctr2 := podmanTest.Podman([]string{"run", "--security-opt", "label=disable", "--name", ctr2Name, "-v", fmt.Sprintf("%v:/test", volName), ALPINE, "cat", "/test/testfile"})
 		ctr2.WaitWithDefaultTimeout()
 		Expect(ctr2).Should(Exit(0))
 		Expect(ctr2.OutputToString()).To(ContainSubstring("helloworld"))
@@ -178,7 +184,7 @@ var _ = Describe("Podman volume plugins", func() {
 		// HACK: `volume rm -f` is timing out trying to remove containers using the volume.
 		// Solution: remove them manually...
 		// TODO: fix this when I get back
-		rmAll := podmanTest.Podman([]string{"rm", "-af"})
+		rmAll := podmanTest.Podman([]string{"rm", "-f", ctr2Name, ctr1Name})
 		rmAll.WaitWithDefaultTimeout()
 		Expect(rmAll).Should(Exit(0))
 	})

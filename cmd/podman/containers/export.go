@@ -5,13 +5,13 @@ import (
 	"os"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/parse"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/pkg/domain/entities"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/parse"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 )
 
 var (
@@ -69,7 +69,7 @@ func init() {
 func export(cmd *cobra.Command, args []string) error {
 	if len(exportOpts.Output) == 0 {
 		file := os.Stdout
-		if terminal.IsTerminal(int(file.Fd())) {
+		if term.IsTerminal(int(file.Fd())) {
 			return errors.Errorf("refusing to export to terminal. Use -o flag or redirect")
 		}
 		exportOpts.Output = "/dev/stdout"

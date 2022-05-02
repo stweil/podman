@@ -1,4 +1,5 @@
-// +build amd64,!windows arm64,!windows
+//go:build amd64 || arm64
+// +build amd64 arm64
 
 package machine
 
@@ -12,11 +13,10 @@ import (
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/cmd/podman/validate"
-	"github.com/containers/podman/v3/pkg/machine"
-	"github.com/containers/podman/v3/pkg/machine/qemu"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/cmd/podman/validate"
+	"github.com/containers/podman/v4/pkg/machine"
 	"github.com/docker/go-units"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
@@ -32,6 +32,7 @@ var (
 		Args:              validate.NoArgs,
 		ValidArgsFunction: completion.AutocompleteNone,
 		Example: `podman machine list,
+  podman machine list --format json
   podman machine ls`,
 	}
 	listFlag = listFlagType{}
@@ -40,18 +41,23 @@ var (
 type listFlagType struct {
 	format    string
 	noHeading bool
+	quiet     bool
 }
 
 type machineReporter struct {
-	Name     string
-	Default  bool
-	Created  string
-	Running  bool
-	LastUp   string
-	VMType   string
-	CPUs     uint64
-	Memory   string
-	DiskSize string
+	Name           string
+	Default        bool
+	Created        string
+	Running        bool
+	LastUp         string
+	Stream         string
+	VMType         string
+	CPUs           uint64
+	Memory         string
+	DiskSize       string
+	Port           int
+	RemoteUsername string
+	IdentityPath   string
 }
 
 func init() {
@@ -63,14 +69,24 @@ func init() {
 	flags := lsCmd.Flags()
 	formatFlagName := "format"
 	flags.StringVar(&listFlag.format, formatFlagName, "{{.Name}}\t{{.VMType}}\t{{.Created}}\t{{.LastUp}}\t{{.CPUs}}\t{{.Memory}}\t{{.DiskSize}}\n", "Format volume output using JSON or a Go template")
-	_ = lsCmd.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(machineReporter{}))
+	_ = lsCmd.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(&machineReporter{}))
 	flags.BoolVar(&listFlag.noHeading, "noheading", false, "Do not print headers")
+	flags.BoolVarP(&listFlag.quiet, "quiet", "q", false, "Show only machine names")
 }
 
 func list(cmd *cobra.Command, args []string) error {
-	var opts machine.ListOptions
-	// We only have qemu VM's for now
-	listResponse, err := qemu.List(opts)
+	var (
+		opts         machine.ListOptions
+		listResponse []*machine.ListResponse
+		err          error
+	)
+
+	if listFlag.quiet {
+		listFlag.format = "{{.Name}}\n"
+	}
+
+	provider := getSystemDefaultProvider()
+	listResponse, err = provider.List(opts)
 	if err != nil {
 		return errors.Wrap(err, "error listing vms")
 	}
@@ -90,7 +106,7 @@ func list(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		b, err := json.Marshal(machineReporter)
+		b, err := json.MarshalIndent(machineReporter, "", "    ")
 		if err != nil {
 			return err
 		}
@@ -114,8 +130,19 @@ func outputTemplate(cmd *cobra.Command, responses []*machineReporter) error {
 		"Memory":   "MEMORY",
 		"DiskSize": "DISK SIZE",
 	})
-
-	row := report.NormalizeFormat(listFlag.format)
+	printHeader := !listFlag.noHeading
+	if listFlag.quiet {
+		printHeader = false
+	}
+	var row string
+	switch {
+	case cmd.Flags().Changed("format"):
+		row = cmd.Flag("format").Value.String()
+		listFlag.noHeading = !report.HasTable(row)
+		row = report.NormalizeFormat(row)
+	default:
+		row = cmd.Flag("format").Value.String()
+	}
 	format := report.EnforceRange(row)
 
 	tmpl, err := report.NewTemplate("list").Parse(format)
@@ -128,12 +155,7 @@ func outputTemplate(cmd *cobra.Command, responses []*machineReporter) error {
 		return err
 	}
 	defer w.Flush()
-
-	if cmd.Flags().Changed("format") && !report.HasTable(listFlag.format) {
-		listFlag.noHeading = true
-	}
-
-	if !listFlag.noHeading {
+	if printHeader {
 		if err := tmpl.Execute(w, headers); err != nil {
 			return errors.Wrapf(err, "failed to write report column headers")
 		}
@@ -153,6 +175,13 @@ func strUint(u uint64) string {
 	return strconv.FormatUint(u, 10)
 }
 
+func streamName(imageStream string) string {
+	if imageStream == "" {
+		return "default"
+	}
+	return imageStream
+}
+
 func toMachineFormat(vms []*machine.ListResponse) ([]*machineReporter, error) {
 	cfg, err := config.ReadCustomConfig()
 	if err != nil {
@@ -167,10 +196,14 @@ func toMachineFormat(vms []*machine.ListResponse) ([]*machineReporter, error) {
 		response.Running = vm.Running
 		response.LastUp = strTime(vm.LastUp)
 		response.Created = strTime(vm.CreatedAt)
+		response.Stream = streamName(vm.Stream)
 		response.VMType = vm.VMType
 		response.CPUs = vm.CPUs
-		response.Memory = strUint(vm.Memory * units.MiB)
-		response.DiskSize = strUint(vm.DiskSize * units.GiB)
+		response.Memory = strUint(vm.Memory)
+		response.DiskSize = strUint(vm.DiskSize)
+		response.Port = vm.Port
+		response.RemoteUsername = vm.RemoteUsername
+		response.IdentityPath = vm.IdentityPath
 
 		machineResponses = append(machineResponses, response)
 	}
@@ -201,8 +234,8 @@ func toHumanFormat(vms []*machine.ListResponse) ([]*machineReporter, error) {
 		response.Created = units.HumanDuration(time.Since(vm.CreatedAt)) + " ago"
 		response.VMType = vm.VMType
 		response.CPUs = vm.CPUs
-		response.Memory = units.HumanSize(float64(vm.Memory) * units.MiB)
-		response.DiskSize = units.HumanSize(float64(vm.DiskSize) * units.GiB)
+		response.Memory = units.HumanSize(float64(vm.Memory))
+		response.DiskSize = units.HumanSize(float64(vm.DiskSize))
 
 		humanResponses = append(humanResponses, response)
 	}

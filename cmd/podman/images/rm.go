@@ -3,10 +3,10 @@ package images
 import (
 	"fmt"
 
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/errorhandling"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/errorhandling"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -56,6 +56,7 @@ func init() {
 
 func imageRemoveFlagSet(flags *pflag.FlagSet) {
 	flags.BoolVarP(&imageOpts.All, "all", "a", false, "Remove all images")
+	flags.BoolVarP(&imageOpts.Ignore, "ignore", "i", false, "Ignore errors if a specified image does not exist")
 	flags.BoolVarP(&imageOpts.Force, "force", "f", false, "Force Removal of the image")
 }
 

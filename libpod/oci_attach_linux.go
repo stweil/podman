@@ -1,4 +1,5 @@
-//+build linux
+//go:build linux
+// +build linux
 
 package libpod
 
@@ -10,10 +11,10 @@ import (
 	"path/filepath"
 
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/errorhandling"
-	"github.com/containers/podman/v3/pkg/kubeutils"
-	"github.com/containers/podman/v3/utils"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v4/pkg/kubeutils"
+	"github.com/containers/podman/v4/utils"
 	"github.com/moby/term"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -143,7 +144,7 @@ func (c *Container) attachToExec(streams *define.AttachStreams, keys *string, se
 	}
 
 	// 2: read from attachFd that the parent process has set up the console socket
-	if _, err := readConmonPipeData(attachFd, ""); err != nil {
+	if _, err := readConmonPipeData(c.ociRuntime.Name(), attachFd, ""); err != nil {
 		return err
 	}
 
@@ -273,9 +274,15 @@ func readStdio(conn *net.UnixConn, streams *define.AttachStreams, receiveStdoutE
 	var err error
 	select {
 	case err = <-receiveStdoutError:
+		if err := conn.CloseWrite(); err != nil {
+			logrus.Errorf("Failed to close stdin: %v", err)
+		}
 		return err
 	case err = <-stdinDone:
 		if err == define.ErrDetach {
+			if err := conn.CloseWrite(); err != nil {
+				logrus.Errorf("Failed to close stdin: %v", err)
+			}
 			return err
 		}
 		if err == nil {

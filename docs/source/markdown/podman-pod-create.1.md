@@ -17,7 +17,11 @@ containers added to it. The pod id is printed to STDOUT. You can then use
 
 #### **--add-host**=_host_:_ip_
 
-Add a host to the /etc/hosts file shared between all containers in the pod.
+Add a custom host-to-IP mapping (host:ip)
+
+Add a line to /etc/hosts. The format is hostname:ip. The **--add-host**
+option can be set multiple times.
+The /etc/hosts file is shared between all containers in the pod.
 
 #### **--cgroup-parent**=*path*
 
@@ -75,21 +79,6 @@ Set custom DNS search domains in the /etc/resolv.conf file that will be shared b
 
 GID map for the user namespace. Using this flag will run the container with user namespace enabled. It conflicts with the `--userns` and `--subgidname` flags.
 
-#### **--uidmap**=*container_uid*:*from_uid*:*amount*
-
-Run the container in a new user namespace using the supplied mapping. This
-option conflicts with the **--userns** and **--subuidname** options. This
-option provides a way to map host UIDs to container UIDs. It can be passed
-several times to map different ranges.
-
-#### **--subgidname**=*name*
-
-Name for GID map from the `/etc/subgid` file. Using this flag will run the container with user namespace enabled. This flag conflicts with `--userns` and `--gidmap`.
-
-#### **--subuidname**=*name*
-
-Name for UID map from the `/etc/subuid` file. Using this flag will run the container with user namespace enabled. This flag conflicts with `--userns` and `--uidmap`.
-
 #### **--help**, **-h**
 
 Print usage statement.
@@ -102,25 +91,39 @@ Set a hostname to the pod
 
 Create an infra container and associate it with the pod. An infra container is a lightweight container used to coordinate the shared kernel namespace of a pod. Default: true.
 
-#### **--infra-conmon-pidfile**=*file*
-
-Write the pid of the infra container's **conmon** process to a file. As **conmon** runs in a separate process than Podman, this is necessary when using systemd to manage Podman containers and pods.
-
 #### **--infra-command**=*command*
 
 The command that will be run to start the infra container. Default: "/pause".
 
+#### **--infra-conmon-pidfile**=*file*
+
+Write the pid of the infra container's **conmon** process to a file. As **conmon** runs in a separate process than Podman, this is necessary when using systemd to manage Podman containers and pods.
+
 #### **--infra-image**=*image*
 
-The image that will be created for the infra container. Default: "k8s.gcr.io/pause:3.1".
+The custom image that will be used for the infra container.  Unless specified, Podman builds a custom local image which does not require pulling down an image.
 
 #### **--infra-name**=*name*
 
 The name that will be used for the pod's infra container.
 
-#### **--ip**=*ipaddr*
+#### **--ip**=*ip*
 
-Set a static IP for the pod's shared network.
+Specify a static IP address for the pod, for example **10.88.64.128**.
+This option can only be used if the pod is joined to only a single network - i.e., **--network=network-name** is used at most once -
+and if the pod is not joining another container's network namespace via **--network=container:_id_**.
+The address must be within the network's IP address pool (default **10.88.0.0/16**).
+
+To specify multiple static IP addresses per pod, set multiple networks using the **--network** option with a static IP address specified for each using the `ip` mode for that option.
+
+#### **--ip6**=*ipv6*
+
+Specify a static IPv6 address for the pod, for example **fd46:db93:aa76:ac37::10**.
+This option can only be used if the pod is joined to only a single network - i.e., **--network=network-name** is used at most once -
+and if the pod is not joining another container's network namespace via **--network=container:_id_**.
+The address must be within the network's IPv6 address pool.
+
+To specify multiple static IPv6 addresses per pod, set multiple networks using the **--network** option with a static IPv6 address specified for each using the `ip6` mode for that option.
 
 #### **--label**=*label*, **-l**
 
@@ -132,7 +135,16 @@ Read in a line delimited file of labels.
 
 #### **--mac-address**=*address*
 
-Set a static MAC address for the pod's shared network.
+Pod network interface MAC address (e.g. 92:d0:c6:0a:29:33)
+This option can only be used if the pod is joined to only a single network - i.e., **--network=_network-name_** is used at most once -
+and if the pod is not joining another container's network namespace via **--network=container:_id_**.
+
+Remember that the MAC address in an Ethernet network must be unique.
+The IPv6 link-local address will be based on the device's MAC address
+according to RFC4862.
+
+To specify multiple static MAC addresses per pod, set multiple networks using the **--network** option with a static MAC address specified for each using the `mac` mode for that option.
+
 
 #### **--name**=*name*, **-n**
 
@@ -140,32 +152,49 @@ Assign a name to the pod.
 
 #### **--network**=*mode*, **--net**
 
-Set network mode for the pod. Supported values are:
-- **bridge**: Create a network stack on the default bridge. This is the default for rootfull containers.
+Set the network mode for the pod. Invalid if using **--dns**, **--dns-opt**, or **--dns-search** with **--network** that is set to **none** or **container:**_id_.
+
+Valid _mode_ values are:
+
+- **bridge[:OPTIONS,...]**: Create a network stack on the default bridge. This is the default for rootful containers. It is possible to specify these additional options:
+  - **alias=name**: Add network-scoped alias for the container.
+  - **ip=IPv4**: Specify a static ipv4 address for this container.
+  - **ip=IPv6**: Specify a static ipv6 address for this container.
+  - **mac=MAC**: Specify a static mac address for this container.
+  - **interface_name**: Specify a name for the created network interface inside the container.
+
+  For example to set a static ipv4 address and a static mac address, use `--network bridge:ip=10.88.0.10,mac=44:33:22:11:00:99`.
+- \<network name or ID\>[:OPTIONS,...]: Connect to a user-defined network; this is the network name or ID from a network created by **[podman network create](podman-network-create.1.md)**. Using the network name implies the bridge network mode. It is possible to specify the same options described under the bridge mode above. You can use the **--network** option multiple times to specify additional networks.
 - **none**: Create a network namespace for the container but do not configure network interfaces for it, thus the container has no network connectivity.
-- **host**: Do not create a network namespace, all containers in the pod will use the host's network. Note: the host mode gives the container full access to local system services such as D-bus and is therefore considered insecure.
-- **network**: Connect to a user-defined network, multiple networks should be comma-separated.
-- **private**: Create a new namespace for the container. This will use the **bridge** mode for rootfull containers and **slirp4netns** for rootless ones.
-- **slirp4netns[:OPTIONS,...]**: use **slirp4netns**(1) to create a user network stack. This is the default for rootless containers. It is possible to specify these additional options:
-  - **allow_host_loopback=true|false**: Allow the slirp4netns to reach the host loopback IP (`10.0.2.2`, which is added to `/etc/hosts` as `host.containers.internal` for your convenience). Default is false.
+- **container:**_id_: Reuse another container's network stack.
+- **host**: Do not create a network namespace, the container will use the host's network. Note: The host mode gives the container full access to local system services such as D-bus and is therefore considered insecure.
+- **ns:**_path_: Path to a network namespace to join.
+- **private**: Create a new namespace for the container. This will use the **bridge** mode for rootful containers and **slirp4netns** for rootless ones.
+- **slirp4netns[:OPTIONS,...]**: use **slirp4netns**(1) to create a user network stack. This is the default for rootless containers. It is possible to specify these additional options, they can also be set with `network_cmd_options` in containers.conf:
+  - **allow_host_loopback=true|false**: Allow the slirp4netns to reach the host loopback IP (`10.0.2.2`). Default is false.
   - **mtu=MTU**: Specify the MTU to use for this network. (Default is `65520`).
   - **cidr=CIDR**: Specify ip range to use for this network. (Default is `10.0.2.0/24`).
-  - **enable_ipv6=true|false**: Enable IPv6. Default is false. (Required for `outbound_addr6`).
+  - **enable_ipv6=true|false**: Enable IPv6. Default is true. (Required for `outbound_addr6`).
   - **outbound_addr=INTERFACE**: Specify the outbound interface slirp should bind to (ipv4 traffic only).
   - **outbound_addr=IPv4**: Specify the outbound ipv4 address slirp should bind to.
   - **outbound_addr6=INTERFACE**: Specify the outbound interface slirp should bind to (ipv6 traffic only).
   - **outbound_addr6=IPv6**: Specify the outbound ipv6 address slirp should bind to.
   - **port_handler=rootlesskit**: Use rootlesskit for port forwarding. Default.
-  Note: Rootlesskit changes the source IP address of incoming packets to a IP address in the container network namespace, usually `10.0.2.100`. If your application requires the real source IP address, e.g. web server logs, use the slirp4netns port handler. The rootlesskit port handler is also used for rootless containers when connected to user-defined networks.
+  Note: Rootlesskit changes the source IP address of incoming packets to an IP address in the container network namespace, usually `10.0.2.100`. If your application requires the real source IP address, e.g. web server logs, use the slirp4netns port handler. The rootlesskit port handler is also used for rootless containers when connected to user-defined networks.
   - **port_handler=slirp4netns**: Use the slirp4netns port forwarding, it is slower than rootlesskit but preserves the correct source IP address. This port handler cannot be used for user-defined networks.
 
-#### **--network-alias**=strings
+#### **--network-alias**=*alias*
 
-Add a DNS alias for the pod. When the pod is joined to a CNI network with support for the dnsname plugin, the containers inside the pod will be accessible through this name from other containers in the network.
+Add a network-scoped alias for the pod, setting the alias for all networks that the pod joins. To set a name only for a specific network, use the alias option as described under the **--network** option.
+Network aliases work only with the bridge networking mode. This option can be specified multiple times.
+NOTE: A container will only have access to aliases on the first network that it joins. This is a limitation that will be removed in a later release.
 
 #### **--no-hosts**
 
-Disable creation of /etc/hosts for the pod.
+Do not create _/etc/hosts_ for the pod.
+By default, Podman will manage _/etc/hosts_, adding the container's own IP address and any hosts from **--add-host**.
+**--no-hosts** disables this, and the image's _/etc/hosts_ will be preserved unmodified.
+This option conflicts with **--add-host**.
 
 #### **--pid**=*pid*
 
@@ -194,9 +223,41 @@ NOTE: This cannot be modified once the pod is created.
 
 If another pod with the same name already exists, replace and remove it.  The default is **false**.
 
+#### **--security-opt**=*option*
+
+Security Options
+
+- `apparmor=unconfined` : Turn off apparmor confinement for the pod
+- `apparmor=your-profile` : Set the apparmor confinement profile for the pod
+
+- `label=user:USER`     : Set the label user for the pod processes
+- `label=role:ROLE`     : Set the label role for the pod processes
+- `label=type:TYPE`     : Set the label process type for the pod processes
+- `label=level:LEVEL`   : Set the label level for the pod processes
+- `label=filetype:TYPE` : Set the label file type for the pod files
+- `label=disable`       : Turn off label separation for the pod
+
+Note: Labeling can be disabled for all pods/containers by setting label=false in the **containers.conf** (`/etc/containers/containers.conf` or `$HOME/.config/containers/containers.conf`) file.
+
+- `mask=/path/1:/path/2` : The paths to mask separated by a colon. A masked path
+  cannot be accessed inside the containers within the pod.
+
+- `no-new-privileges` : Disable container processes from gaining additional privileges
+
+- `seccomp=unconfined` : Turn off seccomp confinement for the pod
+- `seccomp=profile.json` :  Whitelisted syscalls seccomp Json file to be used as a seccomp filter
+
+- `proc-opts=OPTIONS` : Comma-separated list of options to use for the /proc mount. More details for the
+  possible mount options are specified in the **proc(5)** man page.
+
+- **unmask**=_ALL_ or _/path/1:/path/2_, or shell expanded paths (/proc/*): Paths to unmask separated by a colon. If set to **ALL**, it will unmask all the paths that are masked or made read only by default.
+  The default masked paths are **/proc/acpi, /proc/kcore, /proc/keys, /proc/latency_stats, /proc/sched_debug, /proc/scsi, /proc/timer_list, /proc/timer_stats, /sys/firmware, and /sys/fs/selinux.**  The default paths that are read only are **/proc/asound, /proc/bus, /proc/fs, /proc/irq, /proc/sys, /proc/sysrq-trigger, /sys/fs/cgroup**.
+
+Note: Labeling can be disabled for all containers by setting label=false in the **containers.conf** (`/etc/containers/containers.conf` or `$HOME/.config/containers/containers.conf`) file.
+
 #### **--share**=*namespace*
 
-A comma-separated list of kernel namespaces to share. If none or "" is specified, no namespaces will be shared. The namespaces to choose from are ipc, net, pid, uts.
+A comma-separated list of kernel namespaces to share. If none or "" is specified, no namespaces will be shared. The namespaces to choose from are cgroup, ipc, net, pid, uts.
 
 The operator can identify a pod in three ways:
 UUID long identifier (“f78375b1c487e03c9438c729345e54db9d20cfa2ac1fc3494b6eb60872e74778”)
@@ -207,18 +268,77 @@ podman generates a UUID for each pod, and if a name is not assigned
 to the container with **--name** then a random string name will be generated
 for it. The name is useful any place you need to identify a pod.
 
+#### **--share-parent**
+
+This boolean determines whether or not all containers entering the pod will use the pod as their cgroup parent. The default value of this flag is true. If you are looking to share the cgroup namespace rather than a cgroup parent in a pod, use **--share**
+
+Note: This options conflict with **--share=cgroup** since that would set the pod as the cgroup parent but enter the container into the same cgroupNS as the infra container.
+
+#### **--subgidname**=*name*
+
+Name for GID map from the `/etc/subgid` file. Using this flag will run the container with user namespace enabled. This flag conflicts with `--userns` and `--gidmap`.
+
+#### **--subuidname**=*name*
+
+Name for UID map from the `/etc/subuid` file. Using this flag will run the container with user namespace enabled. This flag conflicts with `--userns` and `--uidmap`.
+
+#### **--sysctl**=_name_=_value_
+
+Configure namespace kernel parameters for all containers in the pod.
+
+For the IPC namespace, the following sysctls are allowed:
+
+- kernel.msgmax
+- kernel.msgmnb
+- kernel.msgmni
+- kernel.sem
+- kernel.shmall
+- kernel.shmmax
+- kernel.shmmni
+- kernel.shm_rmid_forced
+- Sysctls beginning with fs.mqueue.\*
+
+Note: if the ipc namespace is not shared within the pod, these sysctls are not allowed.
+
+For the network namespace, only sysctls beginning with net.\* are allowed.
+
+Note: if the network namespace is not shared within the pod, these sysctls are not allowed.
+
+#### **--uidmap**=*container_uid*:*from_uid*:*amount*
+
+Run the container in a new user namespace using the supplied mapping. This
+option conflicts with the **--userns** and **--subuidname** options. This
+option provides a way to map host UIDs to container UIDs. It can be passed
+several times to map different ranges.
+
 #### **--userns**=*mode*
 
 Set the user namespace mode for all the containers in a pod. It defaults to the **PODMAN_USERNS** environment variable. An empty value ("") means user namespaces are disabled.
 
+Rootless user --userns=Key mappings:
+
+Key       | Host User |  Container User
+----------|---------------|---------------------
+""        |$UID           |0 (Default User account mapped to root user in container.)
+keep-id   |$UID           |$UID (Map user account to same UID within container.)
+auto      |$UID           | nil (Host User UID is not mapped into container.)
+nomap     |$UID           | nil (Host User UID is not mapped into container.)
+
 Valid _mode_ values are:
 
-- *auto[:*_OPTIONS,..._*]*: automatically create a namespace. It is possible to specify these options to `auto`:
+  - *auto[:*_OPTIONS,..._*]*: automatically create a namespace. It is possible to specify these options to `auto`:
+
   - *gidmapping=*_CONTAINER_GID:HOST_GID:SIZE_ to force a GID mapping to be present in the user namespace.
+
   - *size=*_SIZE_: to specify an explicit size for the automatic user namespace. e.g. `--userns=auto:size=8192`. If `size` is not specified, `auto` will estimate a size for the user namespace.
+
   - *uidmapping=*_CONTAINER_UID:HOST_UID:SIZE_ to force a UID mapping to be present in the user namespace.
-- *host*: run in the user namespace of the caller. The processes running in the container will have the same privileges on the host as any other process launched by the calling user (default).
-- *keep-id*: creates a user namespace where the current rootless user's UID:GID are mapped to the same values in the container. This option is ignored for containers created by the root user.
+
+  - *host*: run in the user namespace of the caller. The processes running in the container will have the same privileges on the host as any other process launched by the calling user (default).
+
+  - *keep-id*: creates a user namespace where the current rootless user's UID:GID are mapped to the same values in the container. This option is ignored for containers created by the root user.
+
+  - *nomap*: creates a user namespace where the current rootless user's UID:GID are not mapped into the container. This option is ignored for containers created by the root user.
 
 #### **--volume**, **-v**[=*[[SOURCE-VOLUME|HOST-DIR:]CONTAINER-DIR[:OPTIONS]]*]
 
@@ -226,7 +346,7 @@ Create a bind mount. If you specify, ` -v /HOST-DIR:/CONTAINER-DIR`, Podman
 bind mounts `/HOST-DIR` in the host to `/CONTAINER-DIR` in the Podman
 container. Similarly, `-v SOURCE-VOLUME:/CONTAINER-DIR` will mount the volume
 in the host to the container. If no such named volume exists, Podman will
-create one. The `OPTIONS` are a comma-separated list and can be: <sup>[[1]](#Footnote1)</sup>  (Note when using the remote client, the volumes will be mounted from the remote server, not necessarily the client machine.)
+create one. The `OPTIONS` are a comma-separated list and can be: <sup>[[1]](#Footnote1)</sup>  (Note when using the remote client, including Mac and Windows (excluding WSL2) machines, the volumes will be mounted from the remote server, not necessarily the client machine.)
 
 The _options_ is a comma-separated list and can be:
 
@@ -429,10 +549,13 @@ $ podman pod create --publish 8443:443
 $ podman pod create --network slirp4netns:outbound_addr=127.0.0.1,allow_host_loopback=true
 
 $ podman pod create --network slirp4netns:cidr=192.168.0.0/24
+
+$ podman pod create --network net1:ip=10.89.1.5 --network net2:ip=10.89.10.10
 ```
 
 ## SEE ALSO
-podman-pod(1)
+**[podman(1)](podman.1.md)**, **[podman-pod(1)](podman-pod.1.md)**, **containers.conf(1)**
+
 
 ## HISTORY
 July 2018, Originally compiled by Peter Hunt <pehunt@redhat.com>

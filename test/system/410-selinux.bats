@@ -135,9 +135,8 @@ function check_label() {
 
     # net NS: do not share context
     run_podman run --rm --net container:myctr $IMAGE cat -v /proc/self/attr/current
-    if [[ "$output" = "$context_c1" ]]; then
-	die "run --net : context ($output) is same as running container (it should not be)"
-    fi
+    assert "$output" != "$context_c1" \
+	   "run --net : context should != context of running container"
 
     # The 'myctr2' above was not run with --rm, so it still exists, and
     # we can't remove the original container until this one is gone.
@@ -189,9 +188,8 @@ function check_label() {
 
     # Even after #7902, labels (':c123,c456') should be different
     run_podman run --rm --pod myselinuxpod $IMAGE cat -v /proc/self/attr/current
-    if [[ "$output" = "$context_c1" ]]; then
-	die "context ($output) is the same on two separate containers, it should have been different"
-    fi
+    assert "$output" != "$context_c1" \
+	   "context of two separate containers should be different"
 
     run_podman pod rm myselinuxpod
 }
@@ -245,7 +243,8 @@ function check_label() {
     is "$output" "system_u:object_r:container_file_t:$level $tmpdir" \
        "Confined Relabel Correctly"
 
-    if is_rootless; then
+    # podman-remote has no 'unshare'
+    if is_rootless && ! is_remote; then
        run_podman unshare touch $tmpdir/test1
        # Relabel entire directory
        run_podman unshare chcon system_u:object_r:usr_t:s0 $tmpdir

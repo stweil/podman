@@ -6,10 +6,10 @@ import (
 	"os"
 	"time"
 
+	nettypes "github.com/containers/common/libnetwork/types"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v3/libpod/define"
-	nettypes "github.com/containers/podman/v3/libpod/network/types"
-	"github.com/containers/podman/v3/pkg/specgen"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/specgen"
 	"github.com/containers/storage/pkg/archive"
 )
 
@@ -129,16 +129,12 @@ type RestartReport struct {
 
 type RmOptions struct {
 	All     bool
+	Depend  bool
 	Force   bool
 	Ignore  bool
 	Latest  bool
 	Timeout *uint
 	Volumes bool
-}
-
-type RmReport struct {
-	Err error
-	Id  string //nolint
 }
 
 type ContainerInspectReport struct {
@@ -158,6 +154,7 @@ type CommitOptions struct {
 	Message        string
 	Pause          bool
 	Quiet          bool
+	Squash         bool
 	Writer         io.Writer
 }
 
@@ -181,6 +178,7 @@ type ContainerExportOptions struct {
 type CheckpointOptions struct {
 	All            bool
 	Export         string
+	CreateImage    string
 	IgnoreRootFS   bool
 	IgnoreVolumes  bool
 	Keep           bool
@@ -190,11 +188,15 @@ type CheckpointOptions struct {
 	PreCheckPoint  bool
 	WithPrevious   bool
 	Compression    archive.Compression
+	PrintStats     bool
+	FileLocks      bool
 }
 
 type CheckpointReport struct {
-	Err error
-	Id  string //nolint
+	Err             error                                   `json:"-"`
+	Id              string                                  `json:"Id` //nolint
+	RuntimeDuration int64                                   `json:"runtime_checkpoint_duration"`
+	CRIUStatistics  *define.CRIUCheckpointRestoreStatistics `json:"criu_statistics"`
 }
 
 type RestoreOptions struct {
@@ -204,18 +206,23 @@ type RestoreOptions struct {
 	IgnoreStaticIP  bool
 	IgnoreStaticMAC bool
 	Import          string
+	CheckpointImage bool
 	Keep            bool
 	Latest          bool
 	Name            string
 	TCPEstablished  bool
 	ImportPrevious  string
-	PublishPorts    []nettypes.PortMapping
+	PublishPorts    []string
 	Pod             string
+	PrintStats      bool
+	FileLocks       bool
 }
 
 type RestoreReport struct {
-	Err error
-	Id  string //nolint
+	Err             error                                   `json:"-"`
+	Id              string                                  `json:"Id` //nolint
+	RuntimeDuration int64                                   `json:"runtime_restore_duration"`
+	CRIUStatistics  *define.CRIUCheckpointRestoreStatistics `json:"criu_statistics"`
 }
 
 type ContainerCreateReport struct {
@@ -252,6 +259,8 @@ type ContainerLogsOptions struct {
 	Tail int64
 	// Show timestamps in the logs.
 	Timestamps bool
+	// Show different colors in the logs.
+	Colors bool
 	// Write the stdout to this Writer.
 	StdoutWriter io.Writer
 	// Write the stderr to this Writer.
@@ -333,6 +342,7 @@ type ContainerRunOptions struct {
 	Rm           bool
 	SigProxy     bool
 	Spec         *specgen.SpecGenerator
+	Passwd       bool
 }
 
 // ContainerRunReport describes the results of running
@@ -375,7 +385,7 @@ type ContainerInitReport struct {
 	Id  string //nolint
 }
 
-//ContainerMountOptions describes the input values for mounting containers
+// ContainerMountOptions describes the input values for mounting containers
 // in the CLI
 type ContainerMountOptions struct {
 	All        bool
@@ -422,7 +432,7 @@ type ContainerPortOptions struct {
 // the CLI to output ports
 type ContainerPortReport struct {
 	Id    string //nolint
-	Ports []nettypes.OCICNIPortMapping
+	Ports []nettypes.PortMapping
 }
 
 // ContainerCpOptions describes input options for cp.
@@ -457,4 +467,15 @@ type ContainerStatsReport struct {
 type ContainerRenameOptions struct {
 	// NewName is the new name that will be given to the container.
 	NewName string
+}
+
+// ContainerCloneOptions contains options for cloning an existing continer
+type ContainerCloneOptions struct {
+	ID           string
+	Destroy      bool
+	CreateOpts   ContainerCreateOptions
+	Image        string
+	RawImageName string
+	Run          bool
+	Force        bool
 }

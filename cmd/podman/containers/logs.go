@@ -4,11 +4,11 @@ import (
 	"os"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/cmd/podman/validate"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/cmd/podman/validate"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/util"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -64,6 +64,7 @@ var (
 		ValidArgsFunction: logsCommand.ValidArgsFunction,
 		Example: `podman container logs ctrID
 		podman container logs --names ctrID1 ctrID2
+		podman container logs --color --names ctrID1 ctrID2
 		podman container logs --tail 2 mywebserver
 		podman container logs --follow=true --since 10m ctrID
 		podman container logs mywebserver mydbserver`,
@@ -112,7 +113,9 @@ func logsFlags(cmd *cobra.Command) {
 	_ = cmd.RegisterFlagCompletionFunc(tailFlagName, completion.AutocompleteNone)
 
 	flags.BoolVarP(&logsOptions.Timestamps, "timestamps", "t", false, "Output the timestamps in the log")
+	flags.BoolVarP(&logsOptions.Colors, "color", "", false, "Output the containers with different colors in the log.")
 	flags.BoolVarP(&logsOptions.Names, "names", "n", false, "Output the container name in the log")
+
 	flags.SetInterspersed(false)
 	_ = flags.MarkHidden("details")
 }

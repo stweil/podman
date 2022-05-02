@@ -12,12 +12,13 @@ import (
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v3/pkg/bindings/images"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/domain/entities/reports"
-	"github.com/containers/podman/v3/pkg/domain/utils"
-	"github.com/containers/podman/v3/pkg/errorhandling"
-	utils2 "github.com/containers/podman/v3/utils"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/bindings/images"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/domain/entities/reports"
+	"github.com/containers/podman/v4/pkg/domain/utils"
+	"github.com/containers/podman/v4/pkg/errorhandling"
+	utils2 "github.com/containers/podman/v4/utils"
 	"github.com/pkg/errors"
 )
 
@@ -27,7 +28,7 @@ func (ir *ImageEngine) Exists(_ context.Context, nameOrID string) (*entities.Boo
 }
 
 func (ir *ImageEngine) Remove(ctx context.Context, imagesArg []string, opts entities.ImageRemoveOptions) (*entities.ImageRemoveReport, []error) {
-	options := new(images.RemoveOptions).WithForce(opts.Force).WithAll(opts.All)
+	options := new(images.RemoveOptions).WithForce(opts.Force).WithIgnore(opts.Ignore).WithAll(opts.All)
 	return images.Remove(ir.ClientCtx, imagesArg, options)
 }
 
@@ -122,6 +123,10 @@ func (ir *ImageEngine) Pull(ctx context.Context, rawImage string, opts entities.
 	return &entities.ImagePullReport{Images: pulledImages}, nil
 }
 
+func (ir *ImageEngine) Transfer(ctx context.Context, source entities.ImageScpOptions, dest entities.ImageScpOptions, parentFlags []string) error {
+	return errors.Wrapf(define.ErrNotImplemented, "cannot use the remote client to transfer images between root and rootless storage")
+}
+
 func (ir *ImageEngine) Tag(ctx context.Context, nameOrID string, tags []string, opt entities.ImageTagOptions) error {
 	options := new(images.TagOptions)
 	for _, newTag := range tags {
@@ -188,7 +193,7 @@ func (ir *ImageEngine) Inspect(ctx context.Context, namesOrIDs []string, opts en
 	for _, i := range namesOrIDs {
 		r, err := images.GetImage(ir.ClientCtx, i, options)
 		if err != nil {
-			errModel, ok := err.(errorhandling.ErrorModel)
+			errModel, ok := err.(*errorhandling.ErrorModel)
 			if !ok {
 				return nil, nil, err
 			}
@@ -225,6 +230,7 @@ func (ir *ImageEngine) Import(ctx context.Context, opts entities.ImageImportOpti
 		f   *os.File
 	)
 	options := new(images.ImportOptions).WithChanges(opts.Changes).WithMessage(opts.Message).WithReference(opts.Reference)
+	options.WithOS(opts.OS).WithArchitecture(opts.Architecture).WithVariant(opts.Variant)
 	if opts.SourceIsURL {
 		options.WithURL(opts.Source)
 	} else {
@@ -265,7 +271,10 @@ func (ir *ImageEngine) Save(ctx context.Context, nameOrID string, tags []string,
 			defer func() { _ = os.Remove(f.Name()) }()
 		}
 	default:
-		f, err = os.Create(opts.Output)
+		// This code was added to allow for opening stdout replacing
+		// os.Create(opts.Output) which was attempting to open the file
+		// for read/write which fails on Darwin platforms
+		f, err = os.OpenFile(opts.Output, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	}
 	if err != nil {
 		return err

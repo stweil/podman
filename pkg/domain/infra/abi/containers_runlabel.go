@@ -9,10 +9,10 @@ import (
 
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	envLib "github.com/containers/podman/v3/pkg/env"
-	"github.com/containers/podman/v3/utils"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	envLib "github.com/containers/podman/v4/pkg/env"
+	"github.com/containers/podman/v4/utils"
 	"github.com/google/shlex"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -111,7 +111,6 @@ func generateRunlabelCommand(runlabel string, img *libimage.Image, inputName str
 	var (
 		err             error
 		name, imageName string
-		globalOpts      string
 		cmd             []string
 	)
 
@@ -144,7 +143,7 @@ func generateRunlabelCommand(runlabel string, img *libimage.Image, inputName str
 		runlabel = fmt.Sprintf("%s %s", runlabel, strings.Join(args, " "))
 	}
 
-	cmd, err = generateCommand(runlabel, imageName, name, globalOpts)
+	cmd, err = generateCommand(runlabel, imageName, name)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -209,7 +208,7 @@ func replaceImage(arg, image string) string {
 }
 
 // generateCommand takes a label (string) and converts it to an executable command
-func generateCommand(command, imageName, name, globalOpts string) ([]string, error) {
+func generateCommand(command, imageName, name string) ([]string, error) {
 	if name == "" {
 		name = imageName
 	}
@@ -231,8 +230,6 @@ func generateCommand(command, imageName, name, globalOpts string) ([]string, err
 			newArg = fmt.Sprintf("IMAGE=%s", imageName)
 		case "NAME=NAME":
 			newArg = fmt.Sprintf("NAME=%s", name)
-		case "$GLOBAL_OPTS":
-			newArg = globalOpts
 		default:
 			newArg = replaceName(arg, name)
 			newArg = replaceImage(newArg, imageName)

@@ -6,9 +6,10 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/containers/podman/v3/pkg/api/handlers"
-	"github.com/containers/podman/v3/pkg/bindings"
-	"github.com/containers/podman/v3/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/api/handlers"
+	"github.com/containers/podman/v4/pkg/bindings"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/errorhandling"
 	jsoniter "github.com/json-iterator/go"
 )
 
@@ -28,7 +29,7 @@ func CreatePodFromSpec(ctx context.Context, spec *entities.PodSpec) (*entities.P
 		return nil, err
 	}
 	stringReader := strings.NewReader(specString)
-	response, err := conn.DoRequest(stringReader, http.MethodPost, "/pods/create", nil, nil)
+	response, err := conn.DoRequest(ctx, stringReader, http.MethodPost, "/pods/create", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +44,7 @@ func Exists(ctx context.Context, nameOrID string, options *ExistsOptions) (bool,
 	if err != nil {
 		return false, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodGet, "/pods/%s/exists", nil, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/pods/%s/exists", nil, nil, nameOrID)
 	if err != nil {
 		return false, err
 	}
@@ -65,7 +66,7 @@ func Inspect(ctx context.Context, nameOrID string, options *InspectOptions) (*en
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodGet, "/pods/%s/json", nil, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/pods/%s/json", nil, nil, nameOrID)
 	if err != nil {
 		return nil, err
 	}
@@ -91,13 +92,13 @@ func Kill(ctx context.Context, nameOrID string, options *KillOptions) (*entities
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodPost, "/pods/%s/kill", params, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodPost, "/pods/%s/kill", params, nil, nameOrID)
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
 
-	return &report, response.Process(&report)
+	return &report, response.ProcessWithError(&report, &errorhandling.PodConflictErrorModel{})
 }
 
 // Pause pauses all running containers in a given pod.
@@ -111,13 +112,13 @@ func Pause(ctx context.Context, nameOrID string, options *PauseOptions) (*entiti
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodPost, "/pods/%s/pause", nil, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodPost, "/pods/%s/pause", nil, nil, nameOrID)
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
 
-	return &report, response.Process(&report)
+	return &report, response.ProcessWithError(&report, &errorhandling.PodConflictErrorModel{})
 }
 
 // Prune by default removes all non-running pods in local storage.
@@ -132,7 +133,7 @@ func Prune(ctx context.Context, options *PruneOptions) ([]*entities.PodPruneRepo
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodPost, "/pods/prune", nil, nil)
+	response, err := conn.DoRequest(ctx, nil, http.MethodPost, "/pods/prune", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +159,7 @@ func List(ctx context.Context, options *ListOptions) ([]*entities.ListPodsReport
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodGet, "/pods/json", params, nil)
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/pods/json", params, nil)
 	if err != nil {
 		return podsReports, err
 	}
@@ -178,13 +179,13 @@ func Restart(ctx context.Context, nameOrID string, options *RestartOptions) (*en
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodPost, "/pods/%s/restart", nil, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodPost, "/pods/%s/restart", nil, nil, nameOrID)
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
 
-	return &report, response.Process(&report)
+	return &report, response.ProcessWithError(&report, &errorhandling.PodConflictErrorModel{})
 }
 
 // Remove deletes a Pod from from local storage. The optional force parameter denotes
@@ -202,7 +203,7 @@ func Remove(ctx context.Context, nameOrID string, options *RemoveOptions) (*enti
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodDelete, "/pods/%s", params, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodDelete, "/pods/%s", params, nil, nameOrID)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +223,7 @@ func Start(ctx context.Context, nameOrID string, options *StartOptions) (*entiti
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodPost, "/pods/%s/start", nil, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodPost, "/pods/%s/start", nil, nil, nameOrID)
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +233,8 @@ func Start(ctx context.Context, nameOrID string, options *StartOptions) (*entiti
 		report.Id = nameOrID
 		return &report, nil
 	}
-	return &report, response.Process(&report)
+
+	return &report, response.ProcessWithError(&report, &errorhandling.PodConflictErrorModel{})
 }
 
 // Stop stops all containers in a Pod. The optional timeout parameter can be
@@ -250,7 +252,7 @@ func Stop(ctx context.Context, nameOrID string, options *StopOptions) (*entities
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodPost, "/pods/%s/stop", params, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodPost, "/pods/%s/stop", params, nil, nameOrID)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +262,7 @@ func Stop(ctx context.Context, nameOrID string, options *StopOptions) (*entities
 		report.Id = nameOrID
 		return &report, nil
 	}
-	return &report, response.Process(&report)
+	return &report, response.ProcessWithError(&report, &errorhandling.PodConflictErrorModel{})
 }
 
 // Top gathers statistics about the running processes in a pod. The nameOrID can be a pod name
@@ -277,7 +279,7 @@ func Top(ctx context.Context, nameOrID string, options *TopOptions) ([]string, e
 	if descriptors := options.GetDescriptors(); len(descriptors) > 0 {
 		params.Set("ps_args", strings.Join(descriptors, ","))
 	}
-	response, err := conn.DoRequest(nil, http.MethodGet, "/pods/%s/top", params, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/pods/%s/top", params, nil, nameOrID)
 	if err != nil {
 		return nil, err
 	}
@@ -310,13 +312,13 @@ func Unpause(ctx context.Context, nameOrID string, options *UnpauseOptions) (*en
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(nil, http.MethodPost, "/pods/%s/unpause", nil, nil, nameOrID)
+	response, err := conn.DoRequest(ctx, nil, http.MethodPost, "/pods/%s/unpause", nil, nil, nameOrID)
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
 
-	return &report, response.Process(&report)
+	return &report, response.ProcessWithError(&report, &errorhandling.PodConflictErrorModel{})
 }
 
 // Stats display resource-usage statistics of one or more pods.
@@ -337,7 +339,7 @@ func Stats(ctx context.Context, namesOrIDs []string, options *StatsOptions) ([]*
 	}
 
 	var reports []*entities.PodStatsReport
-	response, err := conn.DoRequest(nil, http.MethodGet, "/pods/stats", params, nil)
+	response, err := conn.DoRequest(ctx, nil, http.MethodGet, "/pods/stats", params, nil)
 	if err != nil {
 		return nil, err
 	}

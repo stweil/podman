@@ -36,8 +36,14 @@ do
     fi
 done
 
-# Make sure cni network plugins directory exists
-mkdir -p /etc/cni/net.d
+cp hack/podman-registry /bin
+
+# Some test operations & checks require a git "identity"
+_gc='git config --file /root/.gitconfig'
+$_gc user.email "TMcTestFace@example.com"
+$_gc user.name "Testy McTestface"
+# Bypass git safety/security checks when operating in a throwaway environment
+git config --system --add safe.directory $GOSRC
 
 # Ensure that all lower-level contexts and child-processes have
 # ready access to higher level orchestration (e.g Cirrus-CI)
@@ -77,13 +83,6 @@ case "$CG_FS_TYPE" in
             else
                 echo "OCI_RUNTIME=runc" >> /etc/ci_environment
             fi
-
-            # As a general policy CGv1 + runc should coincide with the "older"
-            # VM Images in CI.  Verify this is the case.
-            if [[ -n "$VM_IMAGE_NAME" ]] && [[ ! "$VM_IMAGE_NAME" =~ prior ]]
-            then
-                die "Most recent distro. version should never run with CGv1"
-            fi
         fi
         ;;
     cgroup2fs)
@@ -92,13 +91,6 @@ case "$CG_FS_TYPE" in
             # which uses runc as the default.
             warn "Forcing testing with crun instead of runc"
             echo "OCI_RUNTIME=crun" >> /etc/ci_environment
-
-            # As a general policy CGv2 + crun should coincide with the "newer"
-            # VM Images in CI.  Verify this is the case.
-            if [[ -n "$VM_IMAGE_NAME" ]] && [[ "$VM_IMAGE_NAME" =~ prior ]]
-            then
-                die "Least recent distro. version should never run with CGv2"
-            fi
         fi
         ;;
     *) die_unknown CG_FS_TYPE
@@ -119,15 +111,22 @@ case "$OS_RELEASE_ID" in
     ubuntu) ;;
     fedora)
         if ((CONTAINER==0)); then
-            msg "Configuring / Expanding host storage."
-            # VM is setup to allow flexibility in testing alternate storage.
-            # For general use, simply make use of all available space.
-            bash "$SCRIPT_BASE/add_second_partition.sh"
-            $SCRIPT_BASE/logcollector.sh df
-
             # All SELinux distros need this for systemd-in-a-container
             msg "Enabling container_manage_cgroup"
             setsebool container_manage_cgroup true
+        fi
+
+        # For release 36 and later, netavark/aardvark is the default
+        # networking stack for podman.  All previous releases only have
+        # CNI networking available.  Upgrading from one to the other is
+        # not supported at this time.  Support execution of the upgrade
+        # tests in F36 and later, by disabling Netavark and enabling CNI.
+        if [[ "$OS_RELEASE_VER" -ge 36 ]] && \
+           [[ "$TEST_FLAVOR" != "upgrade_test" ]];
+        then
+            use_netavark
+        else # Fedora < 36, or upgrade testing.
+            use_cni
         fi
         ;;
     *) die_unknown OS_RELEASE_ID
@@ -164,6 +163,18 @@ case "$TEST_ENVIRON" in
             # affected/related tests are sensitive to this variable.
             warn "Disabling usernamespace integration testing"
             echo "SKIP_USERNS=1" >> /etc/ci_environment
+
+            # In F35 the hard-coded default
+            # (from containers-common-1-32.fc35.noarch) is 'journald' despite
+            # the upstream repository having this line commented-out.
+            # Containerized integration tests cannot run with 'journald'
+            # as there is no daemon/process there to receive them.
+            cconf="/usr/share/containers/containers.conf"
+            note="- commented-out by setup_environment.sh"
+            if grep -Eq '^log_driver.+journald' "$cconf"; then
+                warn "Patching out $cconf journald log_driver"
+                sed -r -i -e "s/^log_driver(.*)/# log_driver\1 $note/" "$cconf"
+            fi
         fi
         ;;
     *) die_unknown TEST_ENVIRON
@@ -171,18 +182,25 @@ esac
 
 # Required to be defined by caller: Are we testing as root or a regular user
 case "$PRIV_NAME" in
-    root) ;;
+    root)
+        if [[ "$TEST_FLAVOR" = "sys" ]]; then
+            # Used in local image-scp testing
+            setup_rootless
+            echo "PODMAN_ROOTLESS_USER=$ROOTLESS_USER" >> /etc/ci_environment
+        fi
+        ;;
     rootless)
         # load kernel modules since the rootless user has no permission to do so
         modprobe ip6_tables || :
         modprobe ip6table_nat || :
-        # Needs to exist for setup_rootless()
-        ROOTLESS_USER="${ROOTLESS_USER:-some${RANDOM}dude}"
-        echo "ROOTLESS_USER=$ROOTLESS_USER" >> /etc/ci_environment
         setup_rootless
         ;;
     *) die_unknown PRIV_NAME
 esac
+
+if [[ -n "$ROOTLESS_USER" ]]; then
+    echo "ROOTLESS_USER=$ROOTLESS_USER" >> /etc/ci_environment
+fi
 
 # Required to be defined by caller: Are we testing podman or podman-remote client
 # shellcheck disable=SC2154
@@ -197,6 +215,7 @@ esac
 case "$TEST_FLAVOR" in
     ext_svc) ;;
     validate)
+        dnf install -y $PACKAGE_DOWNLOAD_DIR/python3*.rpm
         # For some reason, this is also needed for validation
         make .install.pre-commit
         ;;
@@ -205,25 +224,35 @@ case "$TEST_FLAVOR" in
         # Defined in .cirrus.yml
         # shellcheck disable=SC2154
         if [[ "$ALT_NAME" =~ RPM ]]; then
-            bigto dnf install -y glibc-minimal-langpack rpm-build
+            bigto dnf install -y glibc-minimal-langpack go-rpm-macros rpkg rpm-build shadow-utils-subid-devel
         fi
-        ;&
+        ;;
     docker-py)
         remove_packaged_podman_files
-        make install PREFIX=/usr ETCDIR=/etc
+        make && make install PREFIX=/usr ETCDIR=/etc
 
-        # TODO: Don't install stuff at test runtime!  Do this from
-        # cache_images/fedora_packaging.sh in containers/automation_images
-        # and STRONGLY prefer installing RPMs vs pip packages in venv
-        dnf install -y python3-virtualenv python3-pytest4
-        virtualenv venv
-        source venv/bin/activate
+        msg "Installing previously downloaded/cached packages"
+        dnf install -y $PACKAGE_DOWNLOAD_DIR/python3*.rpm
+        virtualenv .venv/docker-py
+        source .venv/docker-py/bin/activate
         pip install --upgrade pip
         pip install --requirement $GOSRC/test/python/requirements.txt
         ;;
     build) make clean ;;
     unit) ;;
-    apiv2) ;&  # use next item
+    compose_v2)
+        dnf -y remove docker-compose
+        curl -SL https://github.com/docker/compose/releases/download/v2.2.3/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+        ;& # Continue with next item
+    apiv2)
+        msg "Installing previously downloaded/cached packages"
+        dnf install -y $PACKAGE_DOWNLOAD_DIR/python3*.rpm
+        virtualenv .venv/requests
+        source .venv/requests/bin/activate
+        pip install --upgrade pip
+        pip install --requirement $GOSRC/test/apiv2/python/requirements.txt
+        ;&  # continue with next item
     compose)
         rpm -ivh $PACKAGE_DOWNLOAD_DIR/podman-docker*
         ;&  # continue with next item
@@ -236,19 +265,19 @@ case "$TEST_FLAVOR" in
         # Use existing host bits when testing is to happen inside a container
         # since this script will run again in that environment.
         # shellcheck disable=SC2154
-        if [[ "$TEST_ENVIRON" == "host" ]]; then
+        if [[ "$TEST_ENVIRON" =~ host ]]; then
             if ((CONTAINER)); then
                 die "Refusing to config. host-test in container";
             fi
             remove_packaged_podman_files
-            make install PREFIX=/usr ETCDIR=/etc
+            make && make install PREFIX=/usr ETCDIR=/etc
         elif [[ "$TEST_ENVIRON" == "container" ]]; then
             if ((CONTAINER)); then
                 remove_packaged_podman_files
-                make install PREFIX=/usr ETCDIR=/etc
+                make && make install PREFIX=/usr ETCDIR=/etc
             fi
         else
-            die "Invalid value for $$TEST_ENVIRON=$TEST_ENVIRON"
+            die "Invalid value for \$TEST_ENVIRON=$TEST_ENVIRON"
         fi
 
         install_test_configs
@@ -262,7 +291,7 @@ case "$TEST_FLAVOR" in
         # Ref: https://gitlab.com/gitlab-org/gitlab-runner/-/issues/27270#note_499585550
 
         remove_packaged_podman_files
-        make install PREFIX=/usr ETCDIR=/etc
+        make && make install PREFIX=/usr ETCDIR=/etc
 
         msg "Installing docker and containerd"
         # N/B: Tests check/expect `docker info` output, and this `!= podman info`
@@ -276,6 +305,9 @@ case "$TEST_FLAVOR" in
         rm -rf /run/docker*
         # Guarantee the docker daemon can't be started, even by accident
         rm -vf $(type -P dockerd)
+
+        msg "Recursively chowning source to $ROOTLESS_USER"
+        chown -R $ROOTLESS_USER:$ROOTLESS_USER "$GOPATH" "$GOSRC"
 
         msg "Obtaining necessary gitlab-runner testing bits"
         slug="gitlab.com/gitlab-org/gitlab-runner"

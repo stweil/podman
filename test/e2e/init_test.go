@@ -3,7 +3,7 @@ package integration
 import (
 	"os"
 
-	. "github.com/containers/podman/v3/test/utils"
+	. "github.com/containers/podman/v4/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
@@ -23,7 +23,6 @@ var _ = Describe("Podman init", func() {
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.SeedImages()
 	})
 
 	AfterEach(func() {
@@ -57,7 +56,7 @@ var _ = Describe("Podman init", func() {
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(Exit(0))
 		conData := result.InspectContainerToJSON()
-		Expect(conData[0].State.Status).To(Equal("created"))
+		Expect(conData[0].State).To(HaveField("Status", "initialized"))
 	})
 
 	It("podman init single container by name", func() {
@@ -72,7 +71,7 @@ var _ = Describe("Podman init", func() {
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(Exit(0))
 		conData := result.InspectContainerToJSON()
-		Expect(conData[0].State.Status).To(Equal("created"))
+		Expect(conData[0].State).To(HaveField("Status", "initialized"))
 	})
 
 	It("podman init latest container", func() {
@@ -87,7 +86,7 @@ var _ = Describe("Podman init", func() {
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(Exit(0))
 		conData := result.InspectContainerToJSON()
-		Expect(conData[0].State.Status).To(Equal("created"))
+		Expect(conData[0].State).To(HaveField("Status", "initialized"))
 	})
 
 	It("podman init all three containers, one running", func() {
@@ -107,17 +106,17 @@ var _ = Describe("Podman init", func() {
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(Exit(0))
 		conData := result.InspectContainerToJSON()
-		Expect(conData[0].State.Status).To(Equal("created"))
+		Expect(conData[0].State).To(HaveField("Status", "initialized"))
 		result2 := podmanTest.Podman([]string{"inspect", "test2"})
 		result2.WaitWithDefaultTimeout()
 		Expect(result2).Should(Exit(0))
 		conData2 := result2.InspectContainerToJSON()
-		Expect(conData2[0].State.Status).To(Equal("created"))
+		Expect(conData2[0].State).To(HaveField("Status", "initialized"))
 		result3 := podmanTest.Podman([]string{"inspect", "test3"})
 		result3.WaitWithDefaultTimeout()
 		Expect(result3).Should(Exit(0))
 		conData3 := result3.InspectContainerToJSON()
-		Expect(conData3[0].State.Status).To(Equal("running"))
+		Expect(conData3[0].State).To(HaveField("Status", "running"))
 	})
 
 	It("podman init running container errors", func() {

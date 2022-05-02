@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"io"
 
-	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v4/libpod/define"
 )
 
 //go:generate go run ../generator/generator.go LogOptions
@@ -30,6 +30,7 @@ type CommitOptions struct {
 	Comment *string
 	Format  *string
 	Pause   *bool
+	Squash  *bool
 	Repo    *string
 	Tag     *string
 }
@@ -46,23 +47,39 @@ type AttachOptions struct {
 // CheckpointOptions are optional options for checkpointing containers
 type CheckpointOptions struct {
 	Export         *string
+	CreateImage    *string
 	IgnoreRootfs   *bool
 	Keep           *bool
 	LeaveRunning   *bool
 	TCPEstablished *bool
+	PrintStats     *bool
+	PreCheckpoint  *bool
+	WithPrevious   *bool
+	FileLocks      *bool
 }
 
 //go:generate go run ../generator/generator.go RestoreOptions
 // RestoreOptions are optional options for restoring containers
 type RestoreOptions struct {
 	IgnoreRootfs    *bool
+	IgnoreVolumes   *bool
 	IgnoreStaticIP  *bool
 	IgnoreStaticMAC *bool
-	ImportAchive    *string
-	Keep            *bool
-	Name            *string
-	TCPEstablished  *bool
-	Pod             *string
+	// ImportAchive is the path to an archive which contains the checkpoint data.
+	//
+	// Deprecated: Use ImportArchive instead. This field name is a typo and
+	// will be removed in a future major release.
+	ImportAchive *string
+	// ImportArchive is the path to an archive which contains the checkpoint data.
+	// ImportArchive is preferred over ImportAchive when both are set.
+	ImportArchive  *string
+	Keep           *bool
+	Name           *string
+	TCPEstablished *bool
+	Pod            *string
+	PrintStats     *bool
+	PublishPorts   []string
+	FileLocks      *bool
 }
 
 //go:generate go run ../generator/generator.go CreateOptions
@@ -86,7 +103,8 @@ type ExecInspectOptions struct{}
 //go:generate go run ../generator/generator.go ExecStartOptions
 // ExecStartOptions are optional options for starting
 // exec sessions
-type ExecStartOptions struct{}
+type ExecStartOptions struct {
+}
 
 //go:generate go run ../generator/generator.go HealthCheckOptions
 // HealthCheckOptions are optional options for checking
@@ -129,6 +147,7 @@ type PruneOptions struct {
 //go:generate go run ../generator/generator.go RemoveOptions
 // RemoveOptions are optional options for removing containers
 type RemoveOptions struct {
+	Depend  *bool
 	Ignore  *bool
 	Force   *bool
 	Volumes *bool

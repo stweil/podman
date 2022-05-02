@@ -10,11 +10,11 @@ import (
 	"github.com/containers/image/v5/docker"
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/transports/alltransports"
-	"github.com/containers/podman/v3/libpod"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/systemd"
-	systemdDefine "github.com/containers/podman/v3/pkg/systemd/define"
+	"github.com/containers/podman/v4/libpod"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/systemd"
+	systemdDefine "github.com/containers/podman/v4/pkg/systemd/define"
 	"github.com/coreos/go-systemd/v22/dbus"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -209,7 +209,7 @@ func autoUpdateRegistry(ctx context.Context, image *libimage.Image, ctr *libpod.
 	}
 
 	authfile := getAuthfilePath(ctr, options)
-	needsUpdate, err := newerRemoteImageAvailable(ctx, runtime, image, rawImageName, authfile)
+	needsUpdate, err := newerRemoteImageAvailable(ctx, image, rawImageName, authfile)
 	if err != nil {
 		return report, errors.Wrapf(err, "registry auto-updating container %q: image check for %q failed", cid, rawImageName)
 	}
@@ -399,7 +399,7 @@ func getAuthfilePath(ctr *libpod.Container, options *entities.AutoUpdateOptions)
 
 // newerRemoteImageAvailable returns true if there corresponding image on the remote
 // registry is newer.
-func newerRemoteImageAvailable(ctx context.Context, runtime *libpod.Runtime, img *libimage.Image, origName string, authfile string) (bool, error) {
+func newerRemoteImageAvailable(ctx context.Context, img *libimage.Image, origName string, authfile string) (bool, error) {
 	remoteRef, err := docker.ParseReference("//" + origName)
 	if err != nil {
 		return false, err

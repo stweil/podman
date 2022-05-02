@@ -3,7 +3,7 @@ package entities
 import (
 	"net/url"
 
-	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v4/libpod/define"
 	docker_api_types "github.com/docker/docker/api/types"
 	docker_api_types_volume "github.com/docker/docker/api/types/volume"
 )
@@ -78,8 +78,10 @@ type VolumeCreateOptions struct {
 	Name string `schema:"name"`
 	// Volume driver to use
 	Driver string `schema:"driver"`
-	// User-defined key/value metadata.
+	// User-defined key/value metadata. Provided for compatibility
 	Label map[string]string `schema:"label"`
+	// User-defined key/value metadata. Preferred field, will override Label
+	Labels map[string]string `schema:"labels"`
 	// Mapping of driver options and values.
 	Options map[string]string `schema:"opts"`
 }
@@ -184,4 +186,18 @@ type VolumeCreateBody struct {
 	//
 	// Required: true
 	Name string `json:"Name"`
+}
+
+// VolumeMountReport describes the response from volume mount
+type VolumeMountReport struct {
+	Err  error
+	Id   string //nolint
+	Name string
+	Path string
+}
+
+// VolumeUnmountReport describes the response from umounting a volume
+type VolumeUnmountReport struct {
+	Err error
+	Id  string //nolint
 }

@@ -7,10 +7,10 @@ import (
 	"github.com/containers/common/pkg/apparmor"
 	"github.com/containers/common/pkg/capabilities"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v3/libpod"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/specgen"
-	"github.com/containers/podman/v3/pkg/util"
+	"github.com/containers/podman/v4/libpod"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v4/pkg/util"
 	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/opencontainers/selinux/go-selinux/label"
 	"github.com/pkg/errors"
@@ -146,6 +146,10 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 
 	configSpec := g.Config
 	configSpec.Process.Capabilities.Ambient = []string{}
+
+	// Always unset the inheritable capabilities similarly to what the Linux kernel does
+	// They are used only when using capabilities with uid != 0.
+	configSpec.Process.Capabilities.Inheritable = []string{}
 	configSpec.Process.Capabilities.Bounding = caplist
 
 	user := strings.Split(s.User, ":")[0]
@@ -153,7 +157,6 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 	if (user == "" && s.UserNS.NSMode != specgen.KeepID) || user == "root" || user == "0" {
 		configSpec.Process.Capabilities.Effective = caplist
 		configSpec.Process.Capabilities.Permitted = caplist
-		configSpec.Process.Capabilities.Inheritable = caplist
 	} else {
 		mergedCaps, err := capabilities.MergeCapabilities(nil, s.CapAdd, nil)
 		if err != nil {
@@ -175,12 +178,12 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 		}
 		configSpec.Process.Capabilities.Effective = userCaps
 		configSpec.Process.Capabilities.Permitted = userCaps
-		configSpec.Process.Capabilities.Inheritable = userCaps
 
 		// Ambient capabilities were added to Linux 4.3.  Set ambient
 		// capabilities only when the kernel supports them.
 		if supportAmbientCapabilities() {
 			configSpec.Process.Capabilities.Ambient = userCaps
+			configSpec.Process.Capabilities.Inheritable = userCaps
 		}
 	}
 
@@ -219,7 +222,7 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 	for sysctlKey, sysctlVal := range defaultSysctls {
 		// Ignore mqueue sysctls if --ipc=host
 		if noUseIPC && strings.HasPrefix(sysctlKey, "fs.mqueue.") {
-			logrus.Infof("Sysctl %s=%s ignored in containers.conf, since IPC Namespace set to host", sysctlKey, sysctlVal)
+			logrus.Infof("Sysctl %s=%s ignored in containers.conf, since IPC Namespace set to %q", sysctlKey, sysctlVal, s.IpcNS.NSMode)
 
 			continue
 		}
@@ -246,7 +249,7 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 
 		// Ignore net sysctls if --net=host
 		if s.NetNS.IsHost() && strings.HasPrefix(sysctlKey, "net.") {
-			return errors.Wrapf(define.ErrInvalidArg, "sysctl %s=%s can't be set since Host Namespace set to host", sysctlKey, sysctlVal)
+			return errors.Wrapf(define.ErrInvalidArg, "sysctl %s=%s can't be set since Network Namespace set to host", sysctlKey, sysctlVal)
 		}
 
 		// Ignore uts sysctls if --uts=host

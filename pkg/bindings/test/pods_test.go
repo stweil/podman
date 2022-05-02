@@ -1,15 +1,18 @@
-package test_bindings
+package bindings_test
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/bindings"
-	"github.com/containers/podman/v3/pkg/bindings/pods"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/specgen"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/bindings"
+	"github.com/containers/podman/v4/pkg/bindings/pods"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v4/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
@@ -40,13 +43,13 @@ var _ = Describe("Podman pods", func() {
 	})
 
 	It("inspect pod", func() {
-		//Inspect an invalid pod name
+		// Inspect an invalid pod name
 		_, err := pods.Inspect(bt.conn, "dummyname", nil)
 		Expect(err).ToNot(BeNil())
 		code, _ := bindings.CheckResponseCode(err)
 		Expect(code).To(BeNumerically("==", http.StatusNotFound))
 
-		//Inspect an valid pod name
+		// Inspect an valid pod name
 		response, err := pods.Inspect(bt.conn, newpod, nil)
 		Expect(err).To(BeNil())
 		Expect(response.Name).To(Equal(newpod))
@@ -54,7 +57,7 @@ var _ = Describe("Podman pods", func() {
 
 	// Test validates the list all api returns
 	It("list pod", func() {
-		//List all the pods in the current instance
+		// List all the pods in the current instance
 		podSummary, err := pods.List(bt.conn, nil)
 		Expect(err).To(BeNil())
 		Expect(len(podSummary)).To(Equal(1))
@@ -76,6 +79,7 @@ var _ = Describe("Podman pods", func() {
 		var newpod2 string = "newpod2"
 		bt.Podcreate(&newpod2)
 		podSummary, err = pods.List(bt.conn, nil)
+		Expect(err).To(BeNil(), "Error from pods.List")
 		Expect(len(podSummary)).To(Equal(2))
 		var names []string
 		for _, i := range podSummary {
@@ -103,6 +107,7 @@ var _ = Describe("Podman pods", func() {
 		options := new(pods.ListOptions).WithFilters(filters)
 		filteredPods, err := pods.List(bt.conn, options)
 		Expect(err).ToNot(BeNil())
+		Expect(len(filteredPods)).To(Equal(0), "len(filteredPods)")
 		code, _ := bindings.CheckResponseCode(err)
 		Expect(code).To(BeNumerically("==", http.StatusInternalServerError))
 
@@ -208,6 +213,29 @@ var _ = Describe("Podman pods", func() {
 		}
 	})
 
+	It("start pod with port conflict", func() {
+		randomport, err := utils.GetRandomPort()
+		Expect(err).To(BeNil())
+
+		portPublish := fmt.Sprintf("%d:%d", randomport, randomport)
+		var podwithport string = "newpodwithport"
+		bt.PodcreateAndExpose(&podwithport, &portPublish)
+
+		// Start pod and expose port 12345
+		_, err = pods.Start(bt.conn, podwithport, nil)
+		Expect(err).To(BeNil())
+
+		// Start another pod and expose same port 12345
+		var podwithport2 string = "newpodwithport2"
+		bt.PodcreateAndExpose(&podwithport2, &portPublish)
+
+		_, err = pods.Start(bt.conn, podwithport2, nil)
+		Expect(err).ToNot(BeNil())
+		code, _ := bindings.CheckResponseCode(err)
+		Expect(code).To(BeNumerically("==", http.StatusConflict))
+		Expect(err).To(BeAssignableToTypeOf(&errorhandling.PodConflictErrorModel{}))
+	})
+
 	It("start stop restart pod", func() {
 		// Start an invalid pod
 		_, err = pods.Start(bt.conn, "dummyName", nil)
@@ -275,6 +303,7 @@ var _ = Describe("Podman pods", func() {
 		// No pods pruned since no pod in exited state
 		pruneResponse, err := pods.Prune(bt.conn, nil)
 		Expect(err).To(BeNil())
+		Expect(len(pruneResponse)).To(Equal(0), "len(pruneResponse)")
 		podSummary, err := pods.List(bt.conn, nil)
 		Expect(err).To(BeNil())
 		Expect(len(podSummary)).To(Equal(2))
@@ -291,6 +320,7 @@ var _ = Describe("Podman pods", func() {
 		Expect(response.State).To(Equal(define.PodStateExited))
 		pruneResponse, err = pods.Prune(bt.conn, nil)
 		Expect(err).To(BeNil())
+		Expect(len(pruneResponse)).To(Equal(1), "len(pruneResponse)")
 		// Validate status and record pod id of pod to be pruned
 		Expect(response.State).To(Equal(define.PodStateExited))
 		podID := response.ID

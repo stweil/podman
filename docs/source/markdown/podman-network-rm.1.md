@@ -1,7 +1,7 @@
 % podman-network-rm(1)
 
 ## NAME
-podman\-network\-rm - Remove one or more CNI networks
+podman\-network\-rm - Remove one or more networks
 
 ## SYNOPSIS
 **podman network rm** [*options*] [*network...*]
@@ -45,7 +45,7 @@ Deleted: fred
   **125** The command fails for any other reason
 
 ## SEE ALSO
-podman(1), podman-network(1), podman-network-inspect(1)
+**[podman(1)](podman.1.md)**, **[podman-network(1)](podman-network.1.md)**
 
 ## HISTORY
 August 2019, Originally compiled by Brent Baude <bbaude@redhat.com>

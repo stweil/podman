@@ -1,11 +1,11 @@
 package server
 
 import (
-	"github.com/containers/podman/v3/libpod"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/domain/entities"
-	"github.com/containers/podman/v3/pkg/domain/entities/reports"
-	"github.com/containers/podman/v3/pkg/errorhandling"
+	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v4/pkg/domain/entities/reports"
+	"github.com/containers/podman/v4/pkg/errorhandling"
+	docker "github.com/docker/docker/api/types"
 )
 
 // No such image
@@ -134,9 +134,16 @@ type swagPodAlreadyStopped struct {
 	}
 }
 
-// Image summary
-// swagger:response DockerImageSummary
-type swagImageSummary struct {
+// Image summary for compat API
+// swagger:response DockerImageSummaryResponse
+type swagDockerImageSummaryResponse struct {
+	// in:body
+	Body []docker.ImageSummary
+}
+
+// Image summary for libpod API
+// swagger:response LibpodImageSummaryResponse
+type swagLibpodImageSummaryResponse struct {
 	// in:body
 	Body []entities.ImageSummary
 }
@@ -181,7 +188,7 @@ type swagVolumeCreateResponse struct {
 // swagger:response VolumeList
 type swagVolumeListResponse struct {
 	// in:body
-	Body []libpod.Volume
+	Body []entities.VolumeConfigResponse
 }
 
 // Healthcheck
@@ -226,5 +233,14 @@ type swagSystemAuthResponse struct {
 	// in:body
 	Body struct {
 		entities.AuthReport
+	}
+}
+
+// Inspect response
+// swagger:response InspectExecSession
+type swagInspectExecSession struct {
+	// in:body
+	Body struct {
+		define.InspectExecSession
 	}
 }

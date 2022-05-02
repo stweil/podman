@@ -3,13 +3,13 @@ package pods
 import (
 	"context"
 	"os"
+	"text/template"
 
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v3/cmd/podman/common"
-	"github.com/containers/podman/v3/cmd/podman/registry"
-	"github.com/containers/podman/v3/cmd/podman/validate"
-	"github.com/containers/podman/v3/libpod/define"
-	"github.com/containers/podman/v3/pkg/domain/entities"
+	"github.com/containers/podman/v4/cmd/podman/common"
+	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v4/cmd/podman/validate"
+	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -42,7 +42,7 @@ func init() {
 
 	formatFlagName := "format"
 	flags.StringVarP(&inspectOptions.Format, formatFlagName, "f", "json", "Format the output to a Go template or json")
-	_ = inspectCmd.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(define.InspectPodData{}))
+	_ = inspectCmd.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(&entities.PodInspectReport{}))
 
 	validate.AddLatestFlag(inspectCmd, &inspectOptions.Latest)
 }
@@ -69,18 +69,12 @@ func inspect(cmd *cobra.Command, args []string) error {
 		return enc.Encode(responses)
 	}
 
-	row := report.NormalizeFormat(inspectOptions.Format)
-
-	t, err := report.NewTemplate("inspect").Parse(row)
+	// Cannot use report.New() as it enforces {{range .}} for OriginUser templates
+	tmpl := template.New(cmd.Name()).Funcs(template.FuncMap(report.DefaultFuncs))
+	format := report.NormalizeFormat(inspectOptions.Format)
+	tmpl, err = tmpl.Parse(format)
 	if err != nil {
 		return err
 	}
-
-	w, err := report.NewWriterDefault(os.Stdout)
-	if err != nil {
-		return err
-	}
-	err = t.Execute(w, *responses)
-	w.Flush()
-	return err
+	return tmpl.Execute(os.Stdout, *responses)
 }

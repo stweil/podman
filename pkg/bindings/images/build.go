@@ -5,7 +5,9 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"io/fs"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -17,9 +19,10 @@ import (
 	"strings"
 
 	"github.com/containers/buildah/define"
-	"github.com/containers/podman/v3/pkg/auth"
-	"github.com/containers/podman/v3/pkg/bindings"
-	"github.com/containers/podman/v3/pkg/domain/entities"
+	"github.com/containers/image/v5/types"
+	"github.com/containers/podman/v4/pkg/auth"
+	"github.com/containers/podman/v4/pkg/bindings"
+	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/containers/storage/pkg/fileutils"
 	"github.com/containers/storage/pkg/ioutils"
 	"github.com/docker/go-units"
@@ -61,6 +64,11 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 		}
 		params.Set("annotations", l)
 	}
+
+	if options.AllPlatforms {
+		params.Add("allplatforms", "1")
+	}
+
 	params.Add("t", options.Output)
 	for _, tag := range options.AdditionalTags {
 		params.Add("t", tag)
@@ -217,10 +225,8 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 			platform = "linux"
 		}
 		platform += "/" + options.Architecture
-	} else {
-		if len(platform) > 0 {
-			platform += "/" + runtime.GOARCH
-		}
+	} else if len(platform) > 0 {
+		platform += "/" + runtime.GOARCH
 	}
 	if len(platform) > 0 {
 		params.Set("platform", platform)
@@ -235,12 +241,20 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 			params.Add("platform", platform)
 		}
 	}
-	if contextDir, err := filepath.EvalSymlinks(options.ContextDirectory); err == nil {
+	var err error
+	var contextDir string
+	if contextDir, err = filepath.EvalSymlinks(options.ContextDirectory); err == nil {
 		options.ContextDirectory = contextDir
 	}
 
 	params.Set("pullpolicy", options.PullPolicy.String())
 
+	switch options.CommonBuildOpts.IdentityLabel {
+	case types.OptionalBoolTrue:
+		params.Set("identitylabel", "1")
+	case types.OptionalBoolFalse:
+		params.Set("identitylabel", "0")
+	}
 	if options.Quiet {
 		params.Set("q", "1")
 	}
@@ -288,17 +302,22 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 		}
 		params.Set("ulimits", string(ulimitsJSON))
 	}
+
+	for _, uenv := range options.UnsetEnvs {
+		params.Add("unsetenv", uenv)
+	}
+
 	var (
-		headers map[string]string
-		err     error
+		headers http.Header
 	)
-	if options.SystemContext == nil {
-		headers, err = auth.Header(options.SystemContext, auth.XRegistryConfigHeader, "", "", "")
-	} else {
+	if options.SystemContext != nil {
 		if options.SystemContext.DockerAuthConfig != nil {
-			headers, err = auth.Header(options.SystemContext, auth.XRegistryAuthHeader, options.SystemContext.AuthFilePath, options.SystemContext.DockerAuthConfig.Username, options.SystemContext.DockerAuthConfig.Password)
+			headers, err = auth.MakeXRegistryAuthHeader(options.SystemContext, options.SystemContext.DockerAuthConfig.Username, options.SystemContext.DockerAuthConfig.Password)
 		} else {
-			headers, err = auth.Header(options.SystemContext, auth.XRegistryConfigHeader, options.SystemContext.AuthFilePath, "", "")
+			headers, err = auth.MakeXRegistryConfigHeader(options.SystemContext, "", "")
+		}
+		if options.SystemContext.DockerInsecureSkipTLSVerify == types.OptionalBoolTrue {
+			params.Set("tlsVerify", "false")
 		}
 	}
 	if err != nil {
@@ -318,14 +337,14 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 		}
 	}
 
-	contextDir, err := filepath.Abs(options.ContextDirectory)
+	contextDir, err = filepath.Abs(options.ContextDirectory)
 	if err != nil {
 		logrus.Errorf("Cannot find absolute path of %v: %v", options.ContextDirectory, err)
 		return nil, err
 	}
 
 	tarContent := []string{options.ContextDirectory}
-	newContainerFiles := []string{}
+	newContainerFiles := []string{} // dockerfile paths, relative to context dir, ToSlash()ed
 
 	dontexcludes := []string{"!Dockerfile", "!Containerfile", "!.dockerignore", "!.containerignore"}
 	for _, c := range containerFiles {
@@ -345,30 +364,37 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 			}
 			c = tmpFile.Name()
 		}
+		c = filepath.Clean(c)
+		cfDir := filepath.Dir(c)
+		if absDir, err := filepath.EvalSymlinks(cfDir); err == nil {
+			name := filepath.ToSlash(strings.TrimPrefix(c, cfDir+string(filepath.Separator)))
+			c = filepath.Join(absDir, name)
+		}
+
 		containerfile, err := filepath.Abs(c)
 		if err != nil {
 			logrus.Errorf("Cannot find absolute path of %v: %v", c, err)
 			return nil, err
 		}
 
-		// Check if Containerfile is in the context directory, if so truncate the contextdirectory off path
+		// Check if Containerfile is in the context directory, if so truncate the context directory off path
 		// Do NOT add to tarfile
 		if strings.HasPrefix(containerfile, contextDir+string(filepath.Separator)) {
 			containerfile = strings.TrimPrefix(containerfile, contextDir+string(filepath.Separator))
 			dontexcludes = append(dontexcludes, "!"+containerfile)
 		} else {
-			// If Containerfile does not exists assume it is in context directory, do Not add to tarfile
+			// If Containerfile does not exist, assume it is in context directory and do Not add to tarfile
 			if _, err := os.Lstat(containerfile); err != nil {
 				if !os.IsNotExist(err) {
 					return nil, err
 				}
 				containerfile = c
 			} else {
-				// If Containerfile does exists but is not in context directory add it to the tarfile
+				// If Containerfile does exist and not in the context directory, add it to the tarfile
 				tarContent = append(tarContent, containerfile)
 			}
 		}
-		newContainerFiles = append(newContainerFiles, containerfile)
+		newContainerFiles = append(newContainerFiles, filepath.ToSlash(containerfile))
 	}
 	if len(newContainerFiles) > 0 {
 		cFileJSON, err := json.Marshal(newContainerFiles)
@@ -377,6 +403,59 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 		}
 		params.Set("dockerfile", string(cFileJSON))
 	}
+
+	// build secrets are usually absolute host path or relative to context dir on host
+	// in any case move secret to current context and ship the tar.
+	if secrets := options.CommonBuildOpts.Secrets; len(secrets) > 0 {
+		secretsForRemote := []string{}
+
+		for _, secret := range secrets {
+			secretOpt := strings.Split(secret, ",")
+			if len(secretOpt) > 0 {
+				modifiedOpt := []string{}
+				for _, token := range secretOpt {
+					arr := strings.SplitN(token, "=", 2)
+					if len(arr) > 1 {
+						if arr[0] == "src" {
+							// read specified secret into a tmp file
+							// move tmp file to tar and change secret source to relative tmp file
+							tmpSecretFile, err := ioutil.TempFile(options.ContextDirectory, "podman-build-secret")
+							if err != nil {
+								return nil, err
+							}
+							defer os.Remove(tmpSecretFile.Name()) // clean up
+							defer tmpSecretFile.Close()
+							srcSecretFile, err := os.Open(arr[1])
+							if err != nil {
+								return nil, err
+							}
+							defer srcSecretFile.Close()
+							_, err = io.Copy(tmpSecretFile, srcSecretFile)
+							if err != nil {
+								return nil, err
+							}
+
+							// add tmp file to context dir
+							tarContent = append(tarContent, tmpSecretFile.Name())
+
+							modifiedSrc := fmt.Sprintf("src=%s", filepath.Base(tmpSecretFile.Name()))
+							modifiedOpt = append(modifiedOpt, modifiedSrc)
+						} else {
+							modifiedOpt = append(modifiedOpt, token)
+						}
+					}
+				}
+				secretsForRemote = append(secretsForRemote, strings.Join(modifiedOpt, ","))
+			}
+		}
+
+		c, err := jsoniter.MarshalToString(secretsForRemote)
+		if err != nil {
+			return nil, err
+		}
+		params.Add("secrets", c)
+	}
+
 	tarfile, err := nTar(append(excludes, dontexcludes...), tarContent...)
 	if err != nil {
 		logrus.Errorf("Cannot tar container entries %v error: %v", tarContent, err)
@@ -392,7 +471,7 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 	if err != nil {
 		return nil, err
 	}
-	response, err := conn.DoRequest(tarfile, http.MethodPost, "/build", params, headers)
+	response, err := conn.DoRequest(ctx, tarfile, http.MethodPost, "/build", params, headers)
 	if err != nil {
 		return nil, err
 	}
@@ -489,16 +568,27 @@ func nTar(excludes []string, sources ...string) (io.ReadCloser, error) {
 				merr = multierror.Append(merr, err)
 				return
 			}
-
-			err = filepath.Walk(s, func(path string, info os.FileInfo, err error) error {
+			err = filepath.WalkDir(s, func(path string, d fs.DirEntry, err error) error {
 				if err != nil {
 					return err
 				}
 
-				if path == s {
-					return nil // skip root dir
+				// check if what we are given is an empty dir, if so then continue w/ it. Else return.
+				// if we are given a file or a symlink, we do not want to exclude it.
+				if d.IsDir() && s == path {
+					var p *os.File
+					p, err = os.Open(path)
+					if err != nil {
+						return err
+					}
+					defer p.Close()
+					_, err = p.Readdir(1)
+					if err != io.EOF {
+						return nil // non empty root dir, need to return
+					} else if err != nil {
+						logrus.Errorf("While reading directory %v: %v", path, err)
+					}
 				}
-
 				name := filepath.ToSlash(strings.TrimPrefix(path, s+string(filepath.Separator)))
 
 				excluded, err := pm.Matches(name) // nolint:staticcheck
@@ -506,10 +596,17 @@ func nTar(excludes []string, sources ...string) (io.ReadCloser, error) {
 					return errors.Wrapf(err, "error checking if %q is excluded", name)
 				}
 				if excluded {
+					// Note: filepath.SkipDir is not possible to use given .dockerignore semantics.
+					// An exception to exclusions may include an excluded directory, therefore we
+					// are required to visit all files. :(
 					return nil
 				}
-
-				if info.Mode().IsRegular() { // add file item
+				switch {
+				case d.Type().IsRegular(): // add file item
+					info, err := d.Info()
+					if err != nil {
+						return err
+					}
 					di, isHardLink := checkHardLink(info)
 					if err != nil {
 						return err
@@ -545,7 +642,11 @@ func nTar(excludes []string, sources ...string) (io.ReadCloser, error) {
 						seen[di] = name
 					}
 					return err
-				} else if info.Mode().IsDir() { // add folders
+				case d.IsDir(): // add folders
+					info, err := d.Info()
+					if err != nil {
+						return err
+					}
 					hdr, lerr := tar.FileInfoHeader(info, name)
 					if lerr != nil {
 						return lerr
@@ -555,8 +656,12 @@ func nTar(excludes []string, sources ...string) (io.ReadCloser, error) {
 					if lerr := tw.WriteHeader(hdr); lerr != nil {
 						return lerr
 					}
-				} else if info.Mode()&os.ModeSymlink != 0 { // add symlinks as it, not content
+				case d.Type()&os.ModeSymlink != 0: // add symlinks as it, not content
 					link, err := os.Readlink(path)
+					if err != nil {
+						return err
+					}
+					info, err := d.Info()
 					if err != nil {
 						return err
 					}
@@ -569,7 +674,7 @@ func nTar(excludes []string, sources ...string) (io.ReadCloser, error) {
 					if lerr := tw.WriteHeader(hdr); lerr != nil {
 						return lerr
 					}
-				} //skip other than file,folder and symlinks
+				} // skip other than file,folder and symlinks
 				return nil
 			})
 			merr = multierror.Append(merr, err)

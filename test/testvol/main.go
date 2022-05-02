@@ -31,7 +31,7 @@ type cliConfig struct {
 }
 
 // Default configuration is stored here. Will be overwritten by flags.
-var config cliConfig = cliConfig{
+var config = cliConfig{
 	logLevel: "error",
 	sockName: "test-volume-plugin",
 }
@@ -86,10 +86,7 @@ func startServer(socketPath string) error {
 		}
 	}
 
-	handle, err := makeDirDriver(config.path)
-	if err != nil {
-		return errors.Wrapf(err, "error making volume driver")
-	}
+	handle := makeDirDriver(config.path)
 	logrus.Infof("Using %s for volume path", config.path)
 
 	server := volume.NewHandler(handle)
@@ -116,12 +113,12 @@ type dirVol struct {
 }
 
 // Make a new DirDriver.
-func makeDirDriver(path string) (volume.Driver, error) {
+func makeDirDriver(path string) volume.Driver {
 	drv := new(DirDriver)
 	drv.volumesPath = path
 	drv.volumes = make(map[string]*dirVol)
 
-	return drv, nil
+	return drv
 }
 
 // Capabilities returns the capabilities of the driver.
@@ -129,8 +126,8 @@ func (d *DirDriver) Capabilities() *volume.CapabilitiesResponse {
 	logrus.Infof("Hit Capabilities() endpoint")
 
 	return &volume.CapabilitiesResponse{
-		volume.Capability{
-			"local",
+		Capabilities: volume.Capability{
+			Scope: "local",
 		},
 	}
 }
@@ -260,7 +257,7 @@ func (d *DirDriver) Path(req *volume.PathRequest) (*volume.PathResponse, error) 
 	}
 
 	return &volume.PathResponse{
-		vol.path,
+		Mountpoint: vol.path,
 	}, nil
 }
 
@@ -280,7 +277,7 @@ func (d *DirDriver) Mount(req *volume.MountRequest) (*volume.MountResponse, erro
 	vol.mounts[req.ID] = true
 
 	return &volume.MountResponse{
-		vol.path,
+		Mountpoint: vol.path,
 	}, nil
 }
 
